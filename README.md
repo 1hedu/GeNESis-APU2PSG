@@ -22,7 +22,8 @@ TODO:
 1. Fix Triangle. Not playing correct note lengths.
 2. Complete mapping of 32 Noise sounds possible on NES. FM Synth to help if applicable, by layering with noise channel.
 
-3. Genesis/MegaDrive FM synth integration. Some possibilities:
+3. Genesis/MegaDrive FM synth integration.
+Some possibilities:
 - DC Offset trick + Volume Modulation (VM) to produce pulse waves of various duty, and triangle. 
 - 2 detuned 50% square waves can give us a pulse wave similar to what NES produces. Can we get 3 to sound like 2?
 - FM synth DAC mode channel to play NES DPCM channel.
