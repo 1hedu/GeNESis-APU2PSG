@@ -2,11 +2,9 @@
 Playback NES audio data on Genesis/Mega Drive
 
 Requirements:
-SGDK
-
-FCEUX NES Emulator
-
-Gens r57Shell Genesis/MegaDrive Emulator
+- SGDK
+- FCEUX NES Emulator
+- Gens r57Shell Genesis/MegaDrive Emulator
 
 You must use SGDK to build the ROM.
 
