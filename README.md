@@ -1,6 +1,13 @@
 # GeNESis-APU2PSG
 Playback NES audio data on Genesis/Mega Drive
 
+This project is devoted to Krikkz, the inventor of EverDrive.  
+
+I used it to playe a MegaDrive port of Super Mario Bros. 1, and it mapped some of the soundtrack to the FM synth. I think it was just the bass, but still very cool to hear it playback with that Sega character. Then I learned, that the Everdrive PRO, actually included a NES core on the FPGA. I just found that so cool. however I was sorry to learn that it does NOT use any of Sega's internal processing, and where possible(it has some limitations I believe mostly related to video), reproduces a faithful copy of the original NES game. I was then struck by the idea to do this project--after all it should be possible. I chose to start with the PSG only; even without overt FM color, the diffrence in soundchip and circuitry on the two different hardware platforms, should still produce some Sega timbre in theory. I thought about how to use the PSG to emulate the Triangle channel, and pulse waves with Duty other than 50%. Ultimately, to avoid the FM synth to the utmost, will require Z80 assembly.
+
+Currently, frequency-accurate playback of each channel is working. Volume modulation per NES envelopes is working on all channels except Square 3, which is Triangle on NES.  This is enough to get a song to playback very recognizably.   
+
+
 Requirements:
 - SGDK
 - FCEUX NES Emulator
@@ -37,3 +44,5 @@ Some possibilities:
 - FM synth layered over 50% square, to color the waveform appropriately per whichever duty the NES is playing.  (IE 50% square + some FM = 12.5% pulse or 25% or 75%)
 
 4. If the FM layering does not produce adequate results, it may be possible to write some custom Z80 assembly, to allow Volume Modulation during a square wave's ON Duty. (IE mute square once it completes half of its ON duty, allow the native 50% cycle to complete while muted, and restore volume during the 50% OFF Duty. This should give us a 25% Duty pulse wave)
+
+5.  Get the attention of Krikkz, so he might add this to his NES core on his Mega Everdrive PRO
