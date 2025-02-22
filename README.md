@@ -33,4 +33,4 @@ Some possibilities:
 - 2 detuned 50% square waves can give us a pulse wave similar to what NES produces. Can we get 3 to sound like 2?
 - FM synth DAC mode channel to play NES DPCM channel.
 - DC Offset trick on 1 FM synth channel using separated operators?
-- FM synth layerd over 50% square, to color the waveform appropriately per whichever duty the NES is playing.  (IE 50% square + some FM = 12.5% pulse or 25% or 75%)
+- FM synth layered over 50% square, to color the waveform appropriately per whichever duty the NES is playing.  (IE 50% square + some FM = 12.5% pulse or 25% or 75%)
