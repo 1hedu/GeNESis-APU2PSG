@@ -2,9 +2,13 @@
 Playback NES audio data on Genesis/Mega Drive
 
 Requirements:
+SGDK
+
 FCEUX NES Emulator
 
 Gens r57Shell Genesis/MegaDrive Emulator
+
+You must use SGDK to build the ROM.
 
 # To record NES audio:
 Open up FCEUX, load GeNESis-APU2PSG lua script. It should run without error.
