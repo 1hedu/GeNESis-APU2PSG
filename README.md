@@ -9,11 +9,11 @@ Requirements:
 You must use SGDK to build the ROM.
 
 # To record NES audio:
-Open up FCEUX, load GeNESis-APU2PSG lua script. It should run without error.
+Open up FCEUX, load GeNESis-APU2PSG-Recorder lua script. It should run without error.
 Load a NES Rom file and the script will imediately start logging the audio data
 
 # To playback NES audio on Genesis/MegaDrive:
-Both the Sega ROM and the lua script must be loaded.
+Both the Sega ROM and the lua script GeNESis-APU2PSG-Player must be loaded.
 As long as the NES data file exists, it should playback the song using the PSG chip.
 
 
