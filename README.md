@@ -3,24 +3,25 @@ Playback NES audio data on Genesis/Mega Drive
 
 Requirements:
 FCEUX NES Emulator
+
 Gens r57Shell Genesis/MegaDrive Emulator
 
-To record NES audio:
+# To record NES audio:
 Open up FCEUX, load GeNESis-APU2PSG lua script. It should run without error.
 Load a NES Rom file and the script will imediately start logging the audio data
 
-To playback NES audio on Genesis/MegaDrive:
+# To playback NES audio on Genesis/MegaDrive:
 Both the Sega ROM and the lua script must be loaded.
 As long as the NES data file exists, it should playback the song using the PSG chip.
 
 
-NOTES:
+# NOTES:
 
 -The noise channel only, must be enabled by pressing A on the controller. If the lua script is not running, this will just blare noise once you enable it.
 
 -A live synced version exists, so that you can directly play your NES game, mute the FCEUX emulator in your OS, and have the Sega emulator running alongside it, playing the audio.
 
-TODO:
+# TODO:
 1. Fix Triangle. Not playing correct note lengths.
 2. Complete mapping of 32 Noise sounds possible on NES. FM Synth to help if applicable, by layering with noise channel.
 
