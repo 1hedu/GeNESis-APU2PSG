@@ -1,5 +1,4 @@
-# GeNESis-APU2PSG
-Playback NES audio data on Genesis/Mega Drive
+# GeNESis-APU2PSG: Playback NES audio data on Genesis/Mega Drive
 
 This project is devoted to Krikkz, the inventor of EverDrive.  
 
