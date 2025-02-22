@@ -15,6 +15,7 @@ As long as the NES data file exists, it should playback the song using the PSG c
 
 
 NOTES:
+
 -The noise channel only, must be enabled by pressing A on the controller. If the lua script is not running, this will just blare noise once you enable it.
 
 -A live synced version exists, so that you can directly play your NES game, mute the FCEUX emulator in your OS, and have the Sega emulator running alongside it, playing the audio.
