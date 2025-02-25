@@ -38,7 +38,7 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 1. <s>Fix Triangle. Not playing correct note lengths.</s>
 2. Complete mapping of 32 Noise sounds possible on NES. FM Synth to help if applicable, by layering with noise channel.
 
-3. Genesis/MegaDrive FM synth integration.
+3. Timbre tricks and Genesis/MegaDrive FM synth integration.
    
   Some possibilities:
   
