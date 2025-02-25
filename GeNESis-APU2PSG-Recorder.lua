@@ -2,7 +2,7 @@
 -- Combines direct register reading with sound.get() for triangle channel
 -- For optimal compatibility with Genesis PSG player
 
-local outputFile = io.open("nes_apu_data.txt", "w")
+local outputFile = io.open("nes_apu_data.txt", "w") --to use the Syncd player, change this line to match that in the Gens lua.
 if not outputFile then
     print("Error: Failed to open file for writing")
     return
