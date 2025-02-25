@@ -135,7 +135,7 @@ int main() {
             }
         }
 
-       // if (!manualNoiseControl) {
+        if (!manualNoiseControl) {
             nesPulse1Freq = (*(volatile u8*)0xFF0000) | ((*(volatile u8*)0xFF0001) << 8);
             nesPulse1Vol = *(volatile u8*)0xFF0002;
             nesPulse2Freq = (*(volatile u8*)0xFF0003) | ((*(volatile u8*)0xFF0004) << 8);
@@ -147,7 +147,7 @@ int main() {
             nesTriangleFreq = (*(volatile u8*)0xFF000A) | ((*(volatile u8*)0xFF000B) << 8);
             nesTriangleVol = *(volatile u8*)0xFF000C;
             nesTriangleActive = *(volatile u8*)0xFF000D;
-       // }
+        }
 
         Z80_requestBus(TRUE);
 
@@ -184,7 +184,7 @@ int main() {
 
         Z80_releaseBus();
 
-        //if (!manualNoiseControl) {
+        if (!manualNoiseControl) {
             *(volatile u8*)0xFF0000 = 0;
             *(volatile u8*)0xFF0001 = 0;
             *(volatile u8*)0xFF0002 = 0;
@@ -199,7 +199,7 @@ int main() {
             *(volatile u8*)0xFF000B = 0;
             *(volatile u8*)0xFF000C = 0;
             *(volatile u8*)0xFF000D = 0;
-        //}
+        }
 
         prevButtons = joypad;
 
