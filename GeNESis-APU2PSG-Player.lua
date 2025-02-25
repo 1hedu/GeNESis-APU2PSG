@@ -1,4 +1,4 @@
-local filename = "nes_apu_data.txt"
+local filename = "C:\\Users\\darek\\Desktop\\nes_apu_data.txt"
 local file = io.open(filename, "r")
 if not file then
     print("Error: NES APU Data file not found!")
