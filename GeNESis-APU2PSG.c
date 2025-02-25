@@ -2,7 +2,7 @@
 #include <z80_ctrl.h>
 #include <psg.h>
 
-#define TRIANGLE_MAX_VOL 0  // Adjustable: 0 (max) to 14 (soft), 15 = mute
+#define TRIANGLE_MAX_VOL 4  // Adjustable: 0 (max) to 14 (soft), 15 = mute
 
 void joyEvent(u16 joy, u16 changed, u16 state) {}
 
