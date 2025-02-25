@@ -1,3 +1,6 @@
+-- NES to Genesis PSG Player Script
+-- For use with Gens emulator (Lua 5.1)
+
 local filename = "nes_apu_data.txt"
 local file = io.open(filename, "r")
 if not file then
@@ -5,6 +8,9 @@ if not file then
     return
 end
 
+local frame_count = 0
+
+-- Convert NES frequency values to Genesis PSG values
 local function convertNESFreqToPSG(nesFreq, isTriangle)
     if nesFreq == 0 then return 0 end
     local clock_rate = 1789773
@@ -15,8 +21,7 @@ local function convertNESFreqToPSG(nesFreq, isTriangle)
     return psg_freq
 end
 
-local frame_count = 0
-
+-- Bitwise AND implementation for Lua 5.1
 local function bit_and(a, b)
     local result = 0
     local bitval = 1
@@ -29,7 +34,8 @@ local function bit_and(a, b)
     return result
 end
 
-gens.registerafter(function()
+-- Main function executed after each frame
+function main()
     local line = file:read("*l")
     if not line then
         print("End of NES data stream.")
@@ -43,37 +49,43 @@ gens.registerafter(function()
     end
 
     if #values < 14 then
-        print("⚠️ Warning: Malformed line in NES data file, skipping...")
+        print("Warning: Malformed line in NES data file, skipping...")
         return
     end
 
+    -- Process pulse channel 1 (square wave 1)
     local pulse1_freq = convertNESFreqToPSG(values[1], false)
     local pulse1_vol = 15 - values[2]
     local pulse1_duty = values[3]
     local pulse1_active = values[4]
+    
+    -- Process pulse channel 2 (square wave 2)
     local pulse2_freq = convertNESFreqToPSG(values[5], false)
     local pulse2_vol = 15 - values[6]
     local pulse2_active = values[8]
 
+    -- Process triangle channel
     local triangle_freq = convertNESFreqToPSG(values[9] or 0, true)
     local triangle_active = values[10] or 0
+    
+    -- Length lookup table for the triangle channel
     local length_table = {
-    10, 254, 20, 2, 40, 4, 80, 6,
-    160, 8, 60, 10, 14, 12, 26, 14,
-    12, 16, 24, 18, 48, 20, 96, 22,
-    192, 24, 72, 26, 16, 28, 32, 30
-}
+        10, 254, 20, 2, 40, 4, 80, 6,
+        160, 8, 60, 10, 14, 12, 26, 14,
+        12, 16, 24, 18, 48, 20, 96, 22,
+        192, 24, 72, 26, 16, 28, 32, 30
+    }
 
-local length_index = math.floor(values[11] / 8)  -- Extract length index from NES data
-local triangle_length = length_table[length_index + 1] or 0  -- Lookup table mapping
-
+    local length_index = math.floor((values[11] or 0) / 8)
+    local triangle_length = length_table[length_index + 1] or 0
     local triangle_mode = values[12] or 0
 
-    local noise_reg = values[13] or 0
-    local noise_vol_reg = values[14] or 0
-    local noise_active = values[15] or 0
+    -- Process noise channel - CORRECTED INDICES
+    local noise_reg = values[11] or 0     -- Changed from 13
+    local noise_vol_reg = values[12] or 0 -- Changed from 14
+    local noise_active = values[13] or 0  -- Changed from 15
 
-    -- **Noise Handling**
+    -- Noise envelope handling
     local envelope_enabled = bit_and(noise_vol_reg, 0x10) ~= 0
     local envelope_loop = bit_and(noise_vol_reg, 0x20) ~= 0
     local envelope_period = bit_and(noise_vol_reg, 0x0F)
@@ -81,12 +93,17 @@ local triangle_length = length_table[length_index + 1] or 0  -- Lookup table map
     local noise_vol
     if envelope_enabled then
         local decay = math.floor(frame_count / envelope_period)
-        if envelope_loop then decay = decay % 16 else decay = math.min(decay, 15) end
+        if envelope_loop then 
+            decay = decay % 16 
+        else 
+            decay = math.min(decay, 15) 
+        end
         noise_vol = decay
     else
         noise_vol = bit_and(noise_vol_reg, 0x0F)
     end
     
+    -- Map NES noise parameters to Genesis PSG values
     local noise_mode = math.floor(noise_reg / 128) % 2
     local noise_period = noise_reg % 16
     local noise_value
@@ -100,57 +117,54 @@ local triangle_length = length_table[length_index + 1] or 0  -- Lookup table map
         noise_value = base + freq
     end
 
-    -- **Pulse 1 Handling**
+    -- Write pulse 1 channel data to Genesis memory
     if pulse1_active == 1 then
         memory.writebyte(0xFF0000, pulse1_freq % 256)
         memory.writebyte(0xFF0001, math.floor(pulse1_freq / 256))
         memory.writebyte(0xFF0002, pulse1_vol)
         memory.writebyte(0xFF0008, pulse1_duty)
     else
-        memory.writebyte(0xFF0002, 15)
+        memory.writebyte(0xFF0002, 15)  -- Mute
         memory.writebyte(0xFF0008, 0)
     end
 
-    -- **Pulse 2 Handling**
+    -- Write pulse 2 channel data to Genesis memory
     if pulse2_active == 1 then
         memory.writebyte(0xFF0003, pulse2_freq % 256)
         memory.writebyte(0xFF0004, math.floor(pulse2_freq / 256))
         memory.writebyte(0xFF0005, pulse2_vol)
     else
-        memory.writebyte(0xFF0005, 15)
+        memory.writebyte(0xFF0005, 15)  -- Mute
     end
 
+    -- Triangle channel length and mode handling
+    if triangle_mode >= 128 then
+        triangle_length = 255  -- Play indefinitely if Constant Mode is set
+    elseif triangle_length == 0 then
+        triangle_active = 0  -- If length expires, disable triangle
+    end
 
+    -- Triangle envelope simulation
+    local triangle_psg_vol = 0  -- Default (max volume)
+    if triangle_active == 1 and triangle_freq > 0 then
+        local decay_factor = math.max(0, 15 - math.floor(triangle_length / 16))
+        triangle_psg_vol = decay_factor
+    end
 
-	-- 🛑 **Fix Triangle Length Handling**
-	if triangle_mode >= 128 then
-		triangle_length = 255  -- Play indefinitely if Constant Mode is set
-	elseif triangle_length == 0 then
-		triangle_active = 0  -- If length expires, disable triangle
-	end
+    -- Write triangle channel data to Genesis memory
+    if triangle_active == 1 and triangle_freq > 0 then
+        memory.writebyte(0xFF000A, triangle_freq % 256)
+        memory.writebyte(0xFF000B, math.floor(triangle_freq / 256))
+        memory.writebyte(0xFF000C, triangle_psg_vol)
+        memory.writebyte(0xFF000D, 1)  -- Ensure it's active
+    else
+        memory.writebyte(0xFF000A, 0)  -- Mute triangle frequency
+        memory.writebyte(0xFF000B, 0)
+        memory.writebyte(0xFF000C, 15)  -- Mute volume
+        memory.writebyte(0xFF000D, 0)
+    end
 
-	-- ✅ **Triangle Envelope Simulation**
-	local triangle_psg_vol = 0  -- Default (max volume)
-	if triangle_active == 1 and triangle_freq > 0 then
-		local decay_factor = math.max(0, 15 - math.floor(triangle_length / 16))  -- Scale volume from 0 (loudest) to 15 (silent)
-		triangle_psg_vol = decay_factor
-	end
-
-	-- ✅ Ensure Triangle plays when it's supposed to
-	if triangle_active == 1 and triangle_freq > 0 then
-		memory.writebyte(0xFF000A, triangle_freq % 256)
-		memory.writebyte(0xFF000B, math.floor(triangle_freq / 256))
-		memory.writebyte(0xFF000C, triangle_psg_vol)  -- Triangle "volume"
-		memory.writebyte(0xFF000D, 1)  -- Ensure it's active
-	else
-		memory.writebyte(0xFF000A, 0)  -- Mute triangle frequency
-		memory.writebyte(0xFF000B, 0)
-		memory.writebyte(0xFF000C, 15)  -- Mute volume
-		memory.writebyte(0xFF000D, 0)
-	end
-
-
-    -- **Noise Channel Handling**
+    -- Write noise channel data to Genesis memory using the same formula as the working version
     if noise_active == 1 then
         memory.writebyte(0xFF0006, noise_value)
         memory.writebyte(0xFF0007, 10 - noise_vol)
@@ -159,10 +173,13 @@ local triangle_length = length_table[length_index + 1] or 0  -- Lookup table map
     end
 
     frame_count = frame_count + 1
-	
-	-- ✅ Print the exact values being written to Genesis memory
-		print(string.format("Writing TRI: Freq=%d, Len=%d, Active=%d, Vol=%d", 
-			triangle_freq, triangle_length, triangle_active, triangle_psg_vol))
+    
+    -- Debug output
+    print(string.format("Triangle: Freq=%d, Length=%d, Active=%d, Vol=%d", 
+          triangle_freq, triangle_length, triangle_active, triangle_psg_vol))
+    print(string.format("Noise: Value=0x%X, Vol=%d, Active=%d, Indices=[%d,%d,%d]", 
+          noise_value, noise_vol, noise_active, noise_reg, noise_vol_reg, noise_active))
+end
 
-
-end)
+-- Register the main function to run after each frame
+gens.registerafter(main)
