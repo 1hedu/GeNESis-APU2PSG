@@ -35,7 +35,7 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 - Gens r57shell may be hard to find. I downloaded it, and tried a couple days later from the same location, and the link was broken.  I'm working on a BizHawk version of the Gens lua.
 
 # TODO:
-1. Fix Triangle. Not playing correct note lengths.
+1. <s>Fix Triangle. Not playing correct note lengths.</s>
 2. Complete mapping of 32 Noise sounds possible on NES. FM Synth to help if applicable, by layering with noise channel.
 
 3. Genesis/MegaDrive FM synth integration.
