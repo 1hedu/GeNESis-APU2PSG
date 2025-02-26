@@ -24,7 +24,7 @@ Load a NES Rom file and the script will imediately start logging the audio data
 Both the Sega ROM and the lua script GeNESis-APU2PSG-Player must be loaded. 
 As long as the NES data file exists, in same directory as gens executable, it should playback the song using the PSG chip.
 
-#To use the live synced version:
+# To use the live synced version:
 Have to have both scripts running at the same time, in the same directory. Turn down the NES emulator audio in OS settings.
 
 
