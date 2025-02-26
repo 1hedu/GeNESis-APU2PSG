@@ -33,7 +33,7 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 - The noise channel only, must be enabled by pressing A on the controller. If the lua script is not running, this will just blare noise once you enable it.
 - A live synced version exists, so that you can directly play your NES game, mute the FCEUX emulator in your OS, and have the Sega emulator running alongside it, playing the audio.
 - Gens r57shell may be hard to find. I downloaded it, and tried a couple days later from the same location, and the link was broken.  <s>I'm working on a BizHawk version of the Gens lua.</s> Link is back.
-- PWM might be faked on the PSG alone, by setting Freq to max and modulating volume. will have to compare.
+- PWM might be faked on the PSG alone, by setting Freq to max and modulating volume. Will have to compare.
 
 # TODO:
 1. <s>Fix Triangle. Not playing correct note lengths.</s>
@@ -49,6 +49,6 @@ Have to have both scripts running at the same time, in the same directory. Turn 
   - DC Offset trick on 1 FM synth channel using separated operators?
   - FM synth layered over 50% square, to color the waveform appropriately per whichever duty the NES is playing.  (IE 50% square + some FM = 12.5% pulse or 25% or 75%)
       
-4. If the FM layering and/or DC Offset layering, does not produce adequate results, it may be possible to write some custom Z80 assembly, to allow Volume Modulation during a square wave's ON Duty. (IE mute square once it completes half of its ON duty, allow the native 50% cycle to complete while muted, and restore volume during the 50% OFF Duty. This should give us a 25% Duty pulse wave)
+4. If the PSG-faked PWM, or FM layering, or DC Offset layering, does not produce adequate results, it may be possible to write some custom Z80 assembly, to allow Volume Modulation during a square wave's ON Duty. (IE mute square once it completes half of its ON duty, allow the native 50% cycle to complete while muted, and restore volume during the 50% OFF Duty. This should give us a 25% Duty pulse wave)
 
 5.  Get the attention of Krikkz, so he might add this to his NES core on his Mega Everdrive PRO
