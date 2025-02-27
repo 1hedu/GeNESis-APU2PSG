@@ -6,7 +6,7 @@ I used it to play a MegaDrive port of Super Mario Bros. 1, and it mapped some of
 
 I chose to start with the PSG only because even without layering FM color, the difference in soundchip and circuitry on the two different hardware platforms, should still produce some distinctly-Sega timbre, in theory. I thought about how to use the PSG to emulate the Triangle channel, and pulse waves with Duty other than 50%. Ultimately, to avoid the FM synth to the utmost, probably requires Z80 assembly.
 
-Currently, frequency-accurate playback of each channel is working. Volume modulation per NES envelopes is working on all channels except Square 3, which is Triangle on NES.  This is enough to get a song to playback very recognizably.   
+Currently, frequency-accurate playback of each channel is working. Volume modulation per NES envelopes is working on all channels. <s> except Square 3, which is Triangle on NES.</s>  This is enough to get a song to playback very recognizably.   
 
 
 Requirements:
