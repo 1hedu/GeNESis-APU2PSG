@@ -43,13 +43,13 @@ Have to have both scripts running at the same time, in the same directory. Turn 
    
   Some possibilities:
   
-  - DC Offset trick + Volume Modulation (VM) to produce pulse waves of various duty, and triangle. 
-  - 2 detuned 50% square waves can give us a pulse wave similar to what NES produces. Can we get 3 to sound like 2?
+  - DC Offset trick + Volume Modulation (VM) to produce pulse waves of various duty, and triangle, on PSG.
+  - 2 detuned PSG square waves can give us a pulse wave similar to what NES produces. Can we get 3 to sound like 2?
   - FM synth DAC mode channel to play NES DPCM channel.
-  - DC Offset trick on 1 FM synth channel using separated operators?
+  - DC Offset trick on 1 FM synth channel using separated operators (Special FM Mode)
   - FM synth layered over 50% square, to color the waveform appropriately per whichever duty the NES is playing.  (IE 50% square + some FM = 12.5% pulse or 25% or 75%)
-  - DC Offset on PSG, by setting Freq to max and modulating volume. Will have to compare.
+
       
-4. If the PSG-faked PWM, or FM layering, or DC Offset layering, does not produce adequate results, it may be possible to write some custom Z80 assembly, to allow Volume Modulation during a square wave's ON Duty. (IE mute square once it completes half of its ON duty, allow the native 50% cycle to complete while muted, and restore volume during the 50% OFF Duty. This should give us a 25% Duty pulse wave)
+4. If the PSG-faked PWM, or FM layering, or DC Offset layering, does not produce adequate results, <s>it may be possible to write some custom Z80 assembly, to allow Volume Modulation during a square wave's ON Duty. (IE mute square once it completes half of its ON duty, allow the native 50% cycle to complete while muted, and restore volume during the 50% OFF Duty. This should give us a 25% Duty pulse wave)</s> It does produce adequate results, but steals FM channels in so doing. As for z80, I think thats the way it was always needing to be done, to get the VM-produced pulse wave.
 
 5.  Get the attention of Krikkz, so he might add this to his NES core on his Mega Everdrive PRO
