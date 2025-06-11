@@ -50,6 +50,6 @@ Have to have both scripts running at the same time, in the same directory. Turn 
   - FM synth layered over 50% square, to color the waveform appropriately per whichever duty the NES is playing.  (IE 50% square + some FM = 12.5% pulse or 25% or 75%)
 
       
-4. If the PSG-faked PWM, or FM layering, or DC Offset layering, does not produce adequate results, <s>it may be possible to write some custom Z80 assembly, to allow Volume Modulation during a square wave's ON Duty. (IE mute square once it completes half of its ON duty, allow the native 50% cycle to complete while muted, and restore volume during the 50% OFF Duty. This should give us a 25% Duty pulse wave)</s> <b>It does produce adequate results, but steals FM channels in so doing. As for z80, I think thats the way it was always needing to be done, to get the VM-produced pulse wave.</b>
+4. If the PSG-faked PWM, or FM layering, or DC Offset layering, does not produce adequate results, <s>it may be possible to write some custom Z80 assembly, to allow Volume Modulation during a square wave's ON Duty. (IE mute square once it completes half of its ON duty, allow the native 50% cycle to complete while muted, and restore volume during the 50% OFF Duty. This should give us a 25% Duty pulse wave)</s> <b>It does produce adequate results, but steals FM channels in so doing. As for z80, I think thats the way it was always needing to be done, to get the VM-produced pulse wave out of the PSG.</b>
 
 5.  Get the attention of Krikkz, so he might add this to his NES core on his Mega Everdrive PRO
