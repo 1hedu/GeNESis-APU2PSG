@@ -34,6 +34,7 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 - During playback, the noise channel only, must be enabled by pressing A on the controller. If the lua script is not running, this will just blare noise once you enable it.
 - A live synced version <s>exists,</s> is added.
 - <s>Gens r57shell may be hard to find. I downloaded it, and tried a couple days later from the same location, and the link was broken.  I'm working on a BizHawk version of the Gens lua.</s> Link is back.
+- Thank you to AlyJames, who helped elucidate the potential of pulse waves on the Genesis for me, a random DM.
 
 # TODO:
 1. <s>Fix Triangle. Not playing correct note lengths.</s>
