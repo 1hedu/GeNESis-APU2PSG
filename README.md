@@ -30,6 +30,7 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 
 # NOTES:
 
+- Press 'z' on keyboard to toggle noise channel. i cant get it to rest silently.
 - Alter the filepath in the scripts, to point to same dir, OR put nes_apu_data.txt, in same directory as Gens.exe.
 - During playback, the noise channel only, must be enabled by pressing A on the controller. If the lua script is not running, this will just blare noise once you enable it.
 - A live synced version <s>exists,</s> is added.
