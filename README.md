@@ -8,7 +8,14 @@ I chose to start with the PSG only because even without layering FM color, the d
 
 Currently, frequency-accurate playback of each channel is working. Volume modulation per NES envelopes is working on all channels. <s> except Square 3, which is Triangle on NES.</s>  This is enough to get a song to playback very recognizably.   
 
-**It requires Z80 assembly, and now it has some.** The PSG's attenuator is a 4-bit logarithmic DAC; park a tone channel's period at 0 so its output is DC and rewrite that attenuator fast enough, and the channel stops being a square wave and becomes a waveform generator. That gives real 12.5% / 25% / 75% pulses and a real triangle staircase, on the PSG, with no FM. It also has hard limits, and those limits are why this is now a *combination* of techniques rather than one. The map is below.
+**It requires Z80 assembly, and now it has some.** The PSG's attenuator is a 4-bit logarithmic DAC; park a tone channel's period at 0 so its output is DC and rewrite that attenuator fast enough, and the channel stops being a square wave and becomes a waveform generator. That gives real 12.5% / 25% / 75% pulses and a real triangle staircase, on the PSG, with no FM. It also has hard limits, and those limits are why this is now a *combination* of techniques rather than one.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/crossover-dark.png">
+  <img alt="Pitch map: the volume DAC covers everything below 1920 Hz in V3 and 3107 Hz in V2; above that each voice falls back to the PSG hardware tone generator. The triangle below 109 Hz is reachable only by the volume DAC." src="docs/crossover-light.png">
+</picture>
+
+*Which technique covers which pitch, per voice. Red is the volume DAC, blue is the PSG's own tone generator; the hatched zone is where the DAC is not an upgrade but the only option. Full interactive version: **[the crossover map](https://claude.ai/code/artifact/09fba06d-d92a-44e6-b7d8-c447f013e359)**. Details below.*
 
 
 Requirements:
@@ -35,7 +42,7 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 
 Four techniques, none of which covers the whole job. What follows is which one wins where, and why.
 
-There is a visual version of this: **[the crossover map](https://claude.ai/code/artifact/09fba06d-d92a-44e6-b7d8-c447f013e359)** — the pitch ranges each technique covers, the cycle budget that sets those ceilings, and the noise coverage strip, all drawn from the numbers below. Rebuild it from the repo root with `python3 tools/build_map.py technique-map.html`; every coordinate and percentage comes from the assembler's cycle counts and `nes_apu_data.txt`, so it cannot drift from the code.
+The figures here and in **[the crossover map](https://claude.ai/code/artifact/09fba06d-d92a-44e6-b7d8-c447f013e359)** are generated, not drawn. Rebuild them from the repo root with `python3 tools/build_map.py technique-map.html`; every coordinate and percentage comes from the assembler's cycle counts and `nes_apu_data.txt`, so the pictures cannot drift from the code.
 
 ### 1. Hardware tone generator
 The PSG's own square wave. Pitch-exact, costs nothing, works at any pitch the chip can reach. Two limits: it is 50% duty and only 50% duty, and its period register is 10 bits, so it bottoms out at **109 Hz**. The NES triangle goes down to 27 Hz. Below 109 Hz the hardware generator does not go flat, it simply cannot go there at all.
@@ -64,6 +71,11 @@ Park the tone period at 0 so the channel outputs DC, then rewrite its attenuatio
 | **V2**  | pulse + pulse            | 144 | 24858 Hz | 3107 Hz |
 | **V2D** | pulse + pulse + PCM      | 175 | 20455 Hz | 2557 Hz |
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/loop-budget-dark.png">
+  <img alt="Z80 cycles per sample for each loop variant: two pulse voices at 63 cycles each, a wave voice at 89, a PCM voice at 31, plus 18 cycles of loop overhead." src="docs/loop-budget-light.png">
+</picture>
+
 A 12.5% pulse needs eight slots per period to exist at all, so the ceiling is the sample rate over eight. Above it the voice is handed back to the hardware tone generator: the pitch stays exact and the duty degrades to 50%, which is a far better trade than an aliased 12.5% pulse.
 
 Measured against the capture checked into this repo (8697 frames):
@@ -76,9 +88,16 @@ The PSG's noise generator has three fixed rates. The NES has sixteen periods in 
 | NES period index | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | ch2 period (white) | – | 1 | 2 | 4 | 8 | 12 | 16 | 20 | 25 | 32 | 47 | 63 | 95 | 127 | 254 | 508 |
-| error vs NES | –50% | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 1.0% | –0.8% | 1.1% | 0.8% | 0.3% | 0% | 0.1% | 0.1% |
+| period error | – | 0% | 0% | 0% | 0% | 0% | 0% | 0% | −1.0% | +0.8% | −1.1% | −0.8% | −0.3% | 0% | −0.1% | −0.1% |
 
 Fifteen of sixteen, exactly. Only index 0 is out of reach — it wants a 447 kHz shift rate, and the PSG tops out at half that.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/noise-coverage-dark.png">
+  <img alt="Noise coverage strip: only periods 6, 7, 9 and 11 are close enough to a fixed PSG rate; the other twelve need channel 2 as the shift clock, and those are the ones the capture actually uses." src="docs/noise-coverage-light.png">
+</picture>
+
+*All 16 NES noise periods. Blue is reachable with one of the PSG's three fixed rates, gold needs channel 2 as the shift clock, grey is out of range. Bars are each period's share of noise-active frames in the checked-in capture.*
 
 Short (periodic) mode needs a different mapping. The NES's short sequence is 93 steps to the PSG's 15, so matching the shift *rate* would put the pitch six octaves out; the table matches perceived pitch instead. Indices 14 and 15 clamp, at 9.5 Hz and 4.7 Hz, which is below hearing anyway.
 
@@ -119,7 +138,8 @@ MODE needs a 6-button pad. The on-screen readout shows which loop variant is run
 | `psgdac_z80.h` | assembled driver blob + patch offsets. Generated, checked in, no build step needed |
 | `tools/asmz80.py` | a tiny dependency-free Z80 assembler, so the blob can be regenerated with stock Python |
 | `tools/simz80.py` | runs the assembled driver on a toy Z80 and checks the waveforms it emits |
-| `tools/build_map.py` | generates `technique-map.html`, the visual crossover map, from the cycle counts and the capture |
+| `tools/build_map.py` | generates `technique-map.html` from the cycle counts and the capture. The PNGs in `docs/` are screenshots of its figures |
+| `technique-map.html` | the generated map, standalone. Open it in a browser, or read the hosted copy linked above |
 
 To rebuild the driver after editing the assembly:
 
