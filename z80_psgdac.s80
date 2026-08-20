@@ -1,0 +1,189 @@
+; ==============================================================================
+; GeNESis-APU2PSG -- PSG volume-DAC synthesis driver (Z80)
+; ==============================================================================
+;
+; The SN76489's 4-bit attenuator is a logarithmic DAC.  Park a tone channel's
+; period at 0 so its output is a constant level, then rewrite that channel's
+; attenuation register fast enough and the channel stops being a square wave
+; and becomes a waveform generator.  That is the whole trick.  It is old, it is
+; well known, and it is the only way to get 12.5% / 25% / 75% pulses and a real
+; NES triangle staircase out of a PSG without touching the FM chip.
+;
+; The 68000 cannot drive it: even a per-scanline H-interrupt only covers the
+; 224 active lines and then goes silent for the 38 lines of vblank, which is a
+; 60 Hz buzz laid over everything.  So the loop lives here, free-running, and
+; the 68000 only patches immediate operands into it once per frame while it
+; holds the bus (a ~50us stall, well under one sample).
+;
+; SAMPLE RATE IS LOOP LENGTH.  Every voice added to the loop lowers the rate
+; and with it the pitch ceiling, so the driver ships three loop variants and
+; the 68000 picks one per frame:
+;
+;   V3   pulse A + pulse B + wave C           233 cyc   15363 Hz
+;   V2   pulse A + pulse B                    144 cyc   24858 Hz
+;   V2D  pulse A + pulse B + PCM -> YM2612    180 cyc   19886 Hz  (nominal)
+;
+; Voices not in the running variant fall back to the PSG's own tone generators,
+; which are pitch-exact everywhere and cost nothing -- they just can't do duty.
+;
+; Patch points are labelled P_*.  Each names the *instruction*; the operand it
+; carries starts one byte later (two for the 0xFD-prefixed ones).  psgdac.h
+; owns those offsets so they only have to be right in one place.
+; ==============================================================================
+
+PSG         equ 7F11h           ; PSG port, seen from the Z80 bus
+YMDATA      equ 4001h           ; YM2612 part I data port (address stays latched on 2Ah)
+BANKREG     equ 6000h           ; Z80 -> 68000 bank register, one bit per write
+
+VARS        equ 0300h
+phC         equ VARS+0          ; wave voice phase accumulator (16-bit)
+phCH        equ VARS+1          ;   ...its high byte, which is the table index
+dummy       equ VARS+4          ; store target for a disabled voice: same 13 cycles
+dpcmPage    equ VARS+5          ; page the PCM reader is currently in, for the 68000
+
+WAVEPAGE    equ 04h             ; wave table lives at 0400h, 256-byte aligned
+DPCMBASE    equ 9000h           ; = 68000 0FF1000h through the bank window
+
+MUTE_A      equ 9Fh             ; 10 01 1111 : latch ch0 volume, attenuation 15
+MUTE_B      equ 0BFh            ; 10 11 1111 : latch ch1 volume, attenuation 15
+
+            org 0000h
+
+; ------------------------------------------------------------------ entry ----
+start:
+            di
+            im 1
+            ld sp,VARS
+
+            ; Point the bank window at 68000 0FF0000h (bank 1FEh), LSB first.
+            ; The PCM reader streams straight out of 68000 RAM through it, so
+            ; that no one ever has to push sample data over the Z80 bus.
+            ld hl,BANKREG
+            ld (hl),0
+            ld (hl),1
+            ld (hl),1
+            ld (hl),1
+            ld (hl),1
+            ld (hl),1
+            ld (hl),1
+            ld (hl),1
+            ld (hl),1
+
+            ld hl,0             ; pulse A phase lives in HL
+            exx
+            ld hl,0             ; pulse B phase lives in HL'
+            exx
+            ld iy,0             ; wave C phase lives in IY
+P_dpcm_base:ld bc,DPCMBASE      ; PCM read cursor lives in BC (68000 tells us the real base)
+P_entry:    jp L_v3
+
+; ==============================================================================
+; V3 : pulse A + pulse B + wave C
+; ==============================================================================
+;@cycles L_v3 L_v3end
+L_v3:
+P_v3_a_delta:   ld de,0000h
+                add hl,de
+                ld a,h
+P_v3_a_duty:    cp 80h              ; carry <=> we are inside the high part
+                sbc a,a             ; -> 0FFh if carry, 00h if not
+P_v3_a_span:    and 00h             ; = (attenuation - 15) & 0FFh
+P_v3_a_mute:    add a,MUTE_A        ; log-domain scaling is just an add
+P_v3_a_out:     ld (dummy),a
+                exx
+P_v3_b_delta:   ld de,0000h
+                add hl,de
+                ld a,h
+P_v3_b_duty:    cp 80h
+                sbc a,a
+P_v3_b_span:    and 00h
+P_v3_b_mute:    add a,MUTE_B
+P_v3_b_out:     ld (dummy),a
+                exx
+P_v3_c_delta:   ld bc,0000h
+                add iy,bc
+                ld (phC),iy
+                ld a,(phCH)
+P_v3_c_page:    ld d,WAVEPAGE
+                ld e,a
+                ld a,(de)
+P_v3_c_out:     ld (dummy),a
+P_v3_next:      jp L_v3
+L_v3end:
+
+; ==============================================================================
+; V2 : pulse A + pulse B.  Triangle falls back to the PSG's own tone generator.
+; ==============================================================================
+;@cycles L_v2 L_v2end
+L_v2:
+P_v2_a_delta:   ld de,0000h
+                add hl,de
+                ld a,h
+P_v2_a_duty:    cp 80h
+                sbc a,a
+P_v2_a_span:    and 00h
+P_v2_a_mute:    add a,MUTE_A
+P_v2_a_out:     ld (dummy),a
+                exx
+P_v2_b_delta:   ld de,0000h
+                add hl,de
+                ld a,h
+P_v2_b_duty:    cp 80h
+                sbc a,a
+P_v2_b_span:    and 00h
+P_v2_b_mute:    add a,MUTE_B
+P_v2_b_out:     ld (dummy),a
+                exx
+P_v2_next:      jp L_v2
+L_v2end:
+
+; ==============================================================================
+; V2D : pulse A + pulse B + 8-bit PCM into the YM2612 DAC.
+;
+; DPCM cannot ride the volume-DAC: it would eat the whole loop and still only
+; get 4 logarithmic bits.  The YM2612's channel-6 DAC is 8-bit linear and only
+; needs its address latched once (register 2Ah), after which every sample is a
+; single store.  The samples themselves are read straight out of 68000 RAM via
+; the bank window, so the 68000 never has to hand them over.
+;
+; Ring is 4 KB at 68000 0FF1000h.  The page byte is published on every wrap so
+; the 68000 knows which quarter-K the reader is in and can refill behind it.
+; ==============================================================================
+;@cycles L_v2d L_v2dend
+L_v2d:
+P_v2d_a_delta:  ld de,0000h
+                add hl,de
+                ld a,h
+P_v2d_a_duty:   cp 80h
+                sbc a,a
+P_v2d_a_span:   and 00h
+P_v2d_a_mute:   add a,MUTE_A
+P_v2d_a_out:    ld (dummy),a
+                exx
+P_v2d_b_delta:  ld de,0000h
+                add hl,de
+                ld a,h
+P_v2d_b_duty:   cp 80h
+                sbc a,a
+P_v2d_b_span:   and 00h
+P_v2d_b_mute:   add a,MUTE_B
+P_v2d_b_out:    ld (dummy),a
+                exx
+                ld a,(bc)           ; 68000 RAM, through the bank window
+P_v2d_d_out:    ld (dummy),a        ; -> YM2612 data port, 2Ah already latched
+                inc c
+                jr z,L_v2dwrap      ; not taken 255 samples out of 256
+P_v2d_next:     jp L_v2d
+L_v2dend:
+
+; Out of line so the wrap only costs anything on the 1-in-256 sample that
+; actually crosses a page.  Publishing the page lets the 68000 refill the
+; quarter-K the reader has just left instead of guessing.
+L_v2dwrap:
+                ld a,b
+                inc a
+                and 0Fh             ; 4 KB ring = 16 pages
+P_dpcm_page:    or 90h              ; ...based here
+                ld b,a
+                ld (dpcmPage),a
+P_v2d_wrapnext: jp L_v2d
