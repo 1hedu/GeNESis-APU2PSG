@@ -35,6 +35,8 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 
 Four techniques, none of which covers the whole job. What follows is which one wins where, and why.
 
+There is a visual version of this: **[the crossover map](https://claude.ai/code/artifact/09fba06d-d92a-44e6-b7d8-c447f013e359)** — the pitch ranges each technique covers, the cycle budget that sets those ceilings, and the noise coverage strip, all drawn from the numbers below. Rebuild it from the repo root with `python3 tools/build_map.py technique-map.html`; every coordinate and percentage comes from the assembler's cycle counts and `nes_apu_data.txt`, so it cannot drift from the code.
+
 ### 1. Hardware tone generator
 The PSG's own square wave. Pitch-exact, costs nothing, works at any pitch the chip can reach. Two limits: it is 50% duty and only 50% duty, and its period register is 10 bits, so it bottoms out at **109 Hz**. The NES triangle goes down to 27 Hz. Below 109 Hz the hardware generator does not go flat, it simply cannot go there at all.
 
@@ -117,6 +119,7 @@ MODE needs a 6-button pad. The on-screen readout shows which loop variant is run
 | `psgdac_z80.h` | assembled driver blob + patch offsets. Generated, checked in, no build step needed |
 | `tools/asmz80.py` | a tiny dependency-free Z80 assembler, so the blob can be regenerated with stock Python |
 | `tools/simz80.py` | runs the assembled driver on a toy Z80 and checks the waveforms it emits |
+| `tools/build_map.py` | generates `technique-map.html`, the visual crossover map, from the cycle counts and the capture |
 
 To rebuild the driver after editing the assembly:
 
