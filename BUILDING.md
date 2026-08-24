@@ -45,7 +45,17 @@ make -f makelib.gen PREFIX=m68k-linux-gnu- \
      ASMZ80=../tools/sgdk_fake_sjasm.sh BINTOS=/tmp/bintos
 ```
 
-Then build the ROM with the stock makefile. Ubuntu's cross-GCC defaults to
+Then build the ROM with the stock makefile — **and link SGDK's shipped
+`lib/libgcc.a`, not the cross compiler's own** (`LIBGCC=SGDK/lib/libgcc.a` on
+the make command line). This is the one that will bite silently: Ubuntu's
+`m68k-linux-gnu` libgcc targets Linux, which assumes a 68020+, so its division
+helpers open with `bsr.l` (`0x61FF`) — an instruction the 68000 does not have.
+Every `u32` division in the ROM calls those helpers. BlastEm's core happens to
+accept 68020 encodings so it plays fine there, while Gens r57shell dies with a
+LINE 1111 exception, PicoDrive with an address error, and real hardware would
+crash too — all inside `__divsi3`/`__modsi3` at the first division after boot.
+
+Build the ROM: Ubuntu's cross-GCC defaults to
 emitting a build-id note, which on a bare-metal link lands at address 0 and
 collides with `.text`; a wrapper adds `-Wl,--build-id=none` at link time only.
 An `m68k-elf` toolchain needs neither the wrapper nor any of the above.
