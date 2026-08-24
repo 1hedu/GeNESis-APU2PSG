@@ -193,6 +193,23 @@ static void PSGDAC_init(u32 dpcmRingBase)
     z80w16(P_svc + 1, psgdacEntry[PSGDAC_V3]);
     z80w16(P_svcout + 1, psgdacEntry[PSGDAC_V3]);
 
+    // Own the queue cursors from here: the driver deliberately does not set
+    // them, because its preamble runs after the bus is released and would race
+    // this frame's first flush.
+    z80w16(Z80_QPTR, Z80_QBASE);
+    z80w8(Z80_QEND, Z80_QBASE & 0xFF);
+
+    // Fill the queue with harmless commands rather than leaving it as whatever
+    // the Z80's RAM powered up holding. If anything ever does replay a stale
+    // entry, it writes a zero to the driver's own scratch byte instead of to an
+    // arbitrary address -- which, through the bank window, could be 68000 RAM.
+    for (i = 0; i < 256; i += 3)
+    {
+        *Z80_MEM(Z80_QBASE + i)     = Z80_DUMMY & 0xFF;
+        if (i + 1 < 256) *Z80_MEM(Z80_QBASE + i + 1) = Z80_DUMMY >> 8;
+        if (i + 2 < 256) *Z80_MEM(Z80_QBASE + i + 2) = 0;
+    }
+
     for (i = 0; i < 3; i++)
     {
         psgdacVoice[i].delta = 0; psgdacVoice[i].duty = 0;

@@ -86,10 +86,14 @@ start:
             ld (hl),1
             ld (hl),1
 
-            ld hl,QBASE         ; queue starts empty
-            ld (qptr),hl
-            ld a,l
-            ld (qend),a
+            ; The queue cursors are NOT initialised here. This preamble runs
+            ; when the 68000 releases the bus, which is a race the 68000 loses:
+            ; it can post a frame of commands and set qend before these stores
+            ; land, and then this would reset qend under it. The service routine
+            ; would walk the whole 256-byte page replaying uninitialised RAM as
+            ; (address, data) pairs -- and any address in 8000h..FFFFh writes
+            ; through the bank window into 68000 RAM. The 68000 sets both
+            ; cursors during upload instead, while the Z80 is still held.
 
             ld hl,0             ; pulse A phase lives in HL
             exx

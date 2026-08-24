@@ -316,6 +316,11 @@ def main():
     while cpu.pc != sym["L_v3"]:
         cpu.step()
 
+    # the 68000 owns the cursors now, and sets them during upload
+    cpu.m[0x0206] = QBASE & 0xFF
+    cpu.m[0x0207] = QBASE >> 8
+    cpu.m[0x0208] = QBASE & 0xFF
+
     # post the frame's writes exactly as PSGDAC_flush does
     q = QBASE & 0xFF
     for a, d in cmds:
@@ -359,6 +364,37 @@ def main():
     fail += not ok
     print("%s pulse A's phase survived the service routine (%04X, want %04X)"
           % ("OK " if ok else "BAD", cpu.pair("h", "l"), advanced))
+
+    # ---- a stale queue must not be able to reach 68000 RAM ---------------
+    # The bank window puts 68000 RAM at Z80 0x8000..0xFFFF, so a replayed
+    # garbage address there is a write into the 68000's world. PSGDAC_init
+    # pre-fills the page with writes to the driver's scratch byte; check that
+    # replaying the whole page from a cold start touches nothing above 0x8000.
+    cpu = Z80(blob)
+    for n in ("P_entry", "P_svc", "P_svcout"):
+        patch16(cpu, sym[n] + 1, sym["L_v3"])
+    for k in (0, 1, 2):
+        patch16(cpu, sym[["P_v3_a_out", "P_v3_b_out", "P_v3_c_out"][k]] + 1, 0x0204)
+    for off in range(0, 256, 3):                       # the init fill
+        cpu.m[QBASE + off] = 0x04
+        if off + 1 < 256: cpu.m[QBASE + off + 1] = 0x02
+        if off + 2 < 256: cpu.m[QBASE + off + 2] = 0x00
+    cpu.m[0x0206] = QBASE & 0xFF; cpu.m[0x0207] = QBASE >> 8
+    cpu.m[0x0208] = 0xFF                               # pretend a full page is pending
+    patch16(cpu, sym["P_svc"] + 1, sym["L_svcrun"])
+    while cpu.pc != sym["L_v3"]:
+        cpu.step()
+    hits = []
+    for _ in range(120):
+        cpu.writes.clear()
+        cpu.step()
+        while cpu.pc != sym["L_v3"]:
+            cpu.step()
+        hits += [w for w in cpu.writes if w[0] >= 0x8000]
+    ok = not hits
+    fail += not ok
+    print("%s a cold queue never writes through the bank window into 68000 RAM%s"
+          % ("OK " if ok else "BAD", "" if ok else " -- %r" % hits[:4]))
 
     print("\n%d check(s) failed" % fail)
     return 1 if fail else 0
