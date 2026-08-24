@@ -42,6 +42,7 @@ class Z80:
         self.pc = 0
         self.writes = []
         self.cycles = 0
+        self.zflag = False
 
     def pair(self, hi, lo, regs=None):
         r = regs or self.r
@@ -93,25 +94,46 @@ class Z80:
         elif op == 0x3C:    self.a = (self.a + 1) & 0xFF
         elif op == 0x32:    self.store(self.w16(), self.a); c = 13
         elif op == 0x3A:    self.a = self.m[self.w16()]; c = 13
+        elif op == 0x22:
+            a = self.w16()
+            self.m[a] = self.r["l"]; self.m[a + 1] = self.r["h"]; c = 16
+        elif op == 0x2A:
+            a = self.w16()
+            self.r["l"] = self.m[a]; self.r["h"] = self.m[a + 1]; c = 16
+        elif op == 0x7D:    self.a = self.r["l"]
         elif op == 0x16:    self.r["d"] = self.w8(); c = 7
         elif op == 0x5F:    self.r["e"] = self.a
         elif op == 0x47:    self.r["b"] = self.a
         elif op == 0x1A:    self.a = self.m[self.pair("d", "e")]; c = 7
         elif op == 0x0A:    self.a = self.m[self.pair("b", "c")]; c = 7
-        elif op == 0x0C:    self.r["c"] = (self.r["c"] + 1) & 0xFF
+        elif op == 0x0C:
+            self.r["c"] = (self.r["c"] + 1) & 0xFF; self.zflag = self.r["c"] == 0
+        elif op == 0x2C:    self.r["l"] = (self.r["l"] + 1) & 0xFF
+        elif op == 0x7E:    self.a = self.m[self.pair("h", "l")]; c = 7
+        elif op == 0x56:    self.r["d"] = self.m[self.pair("h", "l")]; c = 7
+        elif op == 0x5E:    self.r["e"] = self.m[self.pair("h", "l")]; c = 7
+        elif op == 0x12:    self.store(self.pair("d", "e"), self.a); c = 7
+        elif op == 0xBD:
+            self.f_c = 1 if self.a < self.r["l"] else 0
+            self.zflag = (self.a == self.r["l"])
+        elif op == 0xE5:
+            self.sp = (self.sp - 2) & 0xFFFF
+            self.m[self.sp] = self.r["l"]; self.m[self.sp + 1] = self.r["h"]; c = 11
+        elif op == 0xE1:
+            self.r["l"] = self.m[self.sp]; self.r["h"] = self.m[self.sp + 1]
+            self.sp = (self.sp + 2) & 0xFFFF; c = 10
         elif op == 0x36:
             self.store(self.pair("h", "l"), self.w8()); c = 10
         elif op == 0xC3:    self.pc = self.w16(); c = 10
-        elif op == 0x28:
+        elif op == 0x28 or op == 0x20:
+            # The driver uses jr z / jr nz after exactly two things: "inc c",
+            # where Z means the PCM cursor wrapped a page, and "cp l", where Z
+            # means the command queue has drained. Track which was last.
             e = self.w8()
+            z = self.zflag
+            take = (z if op == 0x28 else not z)
             c = 7
-            if self.r["c"] == 0:    # only ever used right after inc c
-                self.pc = (self.pc + (e - 256 if e > 127 else e)) & 0xFFFF
-                c = 12
-        elif op == 0x20:
-            e = self.w8()
-            c = 7
-            if self.r["c"] != 0:
+            if take:
                 self.pc = (self.pc + (e - 256 if e > 127 else e)) & 0xFFFF
                 c = 12
         elif op == 0xED:
@@ -146,7 +168,7 @@ def run(blob, sym, variant, patches, waves=None, samples=64):
             patch16(cpu, sym[k] + v[0], v[1])
         else:
             cpu.m[sym[k] + 1] = v
-    for n in ("P_entry", "P_v3_next", "P_v2_next", "P_v2d_next", "P_v2d_wrapnext"):
+    for n in ("P_entry", "P_svc", "P_svcout"):
         patch16(cpu, sym[n] + 1, sym[variant])
     while cpu.pc != sym[variant]:                 # run the init preamble
         cpu.step()
@@ -240,12 +262,12 @@ def main():
     off = run(blob, sym, "L_v3", {"P_v3_a_out": (1, 0x0304),
                                   "P_v3_b_out": (1, 0x0304),
                                   "P_v3_c_out": (1, 0x0304)}, samples=4)
-    ok = on[0][1] == off[0][1] == 233
+    ok = on[0][1] == off[0][1] == 243
     fail += not ok
-    print("%s V3 loop is %d cycles enabled, %d disabled (want 233 both)"
+    print("%s V3 loop is %d cycles enabled, %d disabled (want 243 both)"
           % ("OK " if ok else "BAD", on[0][1], off[0][1]))
 
-    for name, want in (("L_v2", 144), ("L_v2d", 175)):
+    for name, want in (("L_v2", 154), ("L_v2d", 185)):
         r = run(blob, sym, name, {}, samples=4)
         got = r[1][1]
         ok = got == want
@@ -255,7 +277,7 @@ def main():
 
     # ---- PCM ring wraps inside 0x9000..0x9FFF --------------------------
     cpu = Z80(blob)
-    for n in ("P_entry", "P_v2d_next", "P_v2d_wrapnext"):
+    for n in ("P_entry", "P_svc", "P_svcout"):
         patch16(cpu, sym[n] + 1, sym["L_v2d"])
     patch16(cpu, sym["P_v2d_d_out"] + 1, 0x4001)
     patch16(cpu, sym["P_v2d_a_out"] + 1, 0x0304)
@@ -274,6 +296,69 @@ def main():
     fail += not ok
     print("%s PCM cursor stayed in %04X..%04X (ring is 9000..9FFF)"
           % ("OK " if ok else "BAD", lo, hi))
+
+    # ---- the command queue ---------------------------------------------
+    # This is the whole reason the 68000 no longer touches a sound chip, so it
+    # gets checked the same way everything else here does: by running it.
+    QBASE = 0x0300
+    cmds = [(0x7F11, 0x8E), (0x7F11, 0x3F),        # a PSG tone period, latch+data
+            (0x4000, 0x28), (0x4001, 0xF5),        # a YM2612 register, addr+data
+            (0x4000, 0x2A),                        # ...and the DAC re-latch
+            (0x7F11, 0xDF)]                        # silence PSG channel 2
+
+    cpu = Z80(blob)
+    for n in ("P_entry", "P_svc", "P_svcout"):
+        patch16(cpu, sym[n] + 1, sym["L_v3"])
+    patch16(cpu, sym["P_v3_a_out"] + 1, 0x7F11)    # a live DAC voice, to be sure
+    patch16(cpu, sym["P_v3_a_delta"] + 1, 0x0800)  # ...its phase must survive
+    patch16(cpu, sym["P_v3_b_out"] + 1, 0x0204)
+    patch16(cpu, sym["P_v3_c_out"] + 1, 0x0204)
+    while cpu.pc != sym["L_v3"]:
+        cpu.step()
+
+    # post the frame's writes exactly as PSGDAC_flush does
+    q = QBASE & 0xFF
+    for a, d in cmds:
+        cpu.m[QBASE | q] = a & 0xFF;  q = (q + 1) & 0xFF
+        cpu.m[QBASE | q] = a >> 8;    q = (q + 1) & 0xFF
+        cpu.m[QBASE | q] = d;         q = (q + 1) & 0xFF
+    cpu.m[0x0208] = q                              # qend
+    patch16(cpu, sym["P_svc"] + 1, sym["L_svcrun"])
+
+    hl_before = cpu.pair("h", "l")
+    seen, per_sample = [], []
+    for _ in range(len(cmds) + 4):
+        cpu.writes.clear()
+        cpu.step()
+        while cpu.pc != sym["L_v3"]:
+            cpu.step()
+        extra = [w for w in cpu.writes if w != (0x7F11, cpu.writes[0][1])]
+        per_sample.append(len(cpu.writes) - 1)     # minus the DAC voice's own write
+        seen.extend(cpu.writes[1:])
+
+    ok = seen == cmds
+    fail += not ok
+    print("%s queue replayed %d/%d commands in order%s"
+          % ("OK " if ok else "BAD", len(seen), len(cmds),
+             "" if ok else " -- got %r" % (seen,)))
+
+    ok = all(n <= 1 for n in per_sample)
+    fail += not ok
+    print("%s never more than one queued command per sample (max %d)"
+          % ("OK " if ok else "BAD", max(per_sample)))
+
+    drained = (cpu.m[sym["P_svc"] + 1] | (cpu.m[sym["P_svc"] + 2] << 8))
+    ok = drained == sym["L_v3"]
+    fail += not ok
+    print("%s service slot switched itself back off when drained (-> %04X)"
+          % ("OK " if ok else "BAD", drained))
+
+    # HL carries pulse A's phase across the service routine's push/pop
+    advanced = (hl_before + 0x0800 * (len(cmds) + 4)) & 0xFFFF
+    ok = cpu.pair("h", "l") == advanced
+    fail += not ok
+    print("%s pulse A's phase survived the service routine (%04X, want %04X)"
+          % ("OK " if ok else "BAD", cpu.pair("h", "l"), advanced))
 
     print("\n%d check(s) failed" % fail)
     return 1 if fail else 0

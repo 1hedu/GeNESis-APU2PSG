@@ -35,12 +35,20 @@
 #include "psgdac.h"
 
 // -----------------------------------------------------------------------------
-// PSG register access.  Raw bytes rather than SGDK's helpers, because the volume
-// DAC needs exact control of what lands in the attenuator and when.
+// Sound chip access.
+//
+// After boot the 68000 does not write a sound chip at all: it queues (address,
+// data) triples and the Z80 replays them, one per sample. That is what makes a
+// PSG tone period safe -- its latch and data bytes are consecutive entries in
+// one writer's queue, so nothing can land between them.
+//
+// The exception is initialisation, which runs with the Z80 held in reset. There
+// the 68000 really is the only master, so it writes directly and can busy-wait
+// on the YM2612 without stalling anything.
 // -----------------------------------------------------------------------------
 #define PSG_PORT ((vu8*)0xC00011)
 
-static inline void psgWrite(u8 b) { *PSG_PORT = b; }
+static inline void psgWrite(u8 b) { PSGDAC_psg(b); }
 
 static void psgTone(u8 ch, u16 period)
 {
@@ -49,6 +57,19 @@ static void psgTone(u8 ch, u16 period)
 }
 
 static inline void psgAtten(u8 ch, u8 att) { psgWrite(0x90 | (ch << 5) | (att & 0x0F)); }
+
+// ---- direct access, valid only while the Z80 is in reset -------------------
+static inline void psgDirect(u8 b) { *PSG_PORT = b; }
+
+static void ymDirect(u8 part, u8 reg, u8 val)
+{
+    vu8* addr = (vu8*)(0xA04000 + (part * 2));
+    vu8* data = (vu8*)(0xA04001 + (part * 2));
+    while (*addr & 0x80) ;
+    *addr = reg;
+    while (*addr & 0x80) ;
+    *data = val;
+}
 
 // -----------------------------------------------------------------------------
 // NES -> PSG conversion tables.  Regenerate with tools/gen_tables.py.
@@ -182,15 +203,7 @@ static void noiseOut(u8 white, u8 rate)
 // -----------------------------------------------------------------------------
 // YM2612 channel 6 DAC, for DPCM.
 // -----------------------------------------------------------------------------
-static void ymWrite(u8 part, u8 reg, u8 val)
-{
-    vu8* addr = (vu8*)(0xA04000 + (part * 2));
-    vu8* data = (vu8*)(0xA04001 + (part * 2));
-    while (*addr & 0x80) ;
-    *addr = reg;
-    while (*addr & 0x80) ;
-    *data = val;
-}
+static inline void ymWrite(u8 part, u8 reg, u8 val) { PSGDAC_ym(part, reg, val); }
 
 // Part I's address port stays latched on 0x2A so the Z80 can feed the DAC with
 // one store per sample.  Anything the 68000 writes through part I breaks that
@@ -198,16 +211,16 @@ static void ymWrite(u8 part, u8 reg, u8 val)
 // exactly this reason: its per-frame frequency writes never touch part I.
 static void ymRelatchDac(void)
 {
-    if (dpcmAvailable) *(vu8*)0xA04000 = 0x2A;
+    if (dpcmAvailable) PSGDAC_cmd(Z80_YM_ADDR1, 0x2A);
 }
 
 static void ymDacInit(void)
 {
-    ymWrite(0, 0x2B, 0x80);     // channel 6 becomes the DAC
-    ymWrite(1, 0xB6, 0xC0);     // both speakers
-    ymWrite(0, 0x28, 0x06);     // key off, the DAC does not need an envelope
-    ymWrite(0, 0x2A, 0x80);     // sit at mid scale
-    *(vu8*)0xA04000 = 0x2A;
+    ymDirect(0, 0x2B, 0x80);    // channel 6 becomes the DAC
+    ymDirect(1, 0xB6, 0xC0);    // both speakers
+    ymDirect(0, 0x28, 0x06);    // key off, the DAC does not need an envelope
+    ymDirect(0, 0x2A, 0x80);    // sit at mid scale
+    *(vu8*)0xA04000 = 0x2A;     // and leave part I latched on the DAC register
 }
 
 // -----------------------------------------------------------------------------
@@ -252,18 +265,18 @@ static void ymTriangleInit(void)
     for (op = 0; op < 4; op++)
     {
         u8 r = (op * 4) + FM_TRI_IDX;
-        ymWrite(FM_TRI_PART, 0x30 + r, fmTriMul[op]);                  // DT 0, MUL
-        ymWrite(FM_TRI_PART, 0x40 + r, fmTriTL[op] + FM_TRI_LEVEL);    // total level
-        ymWrite(FM_TRI_PART, 0x50 + r, 0x1F);                          // instant attack
-        ymWrite(FM_TRI_PART, 0x60 + r, 0x00);                          // no decay
-        ymWrite(FM_TRI_PART, 0x70 + r, 0x00);                          // no second decay
-        ymWrite(FM_TRI_PART, 0x80 + r, 0x0F);                          // full sustain, fast release
-        ymWrite(FM_TRI_PART, 0x90 + r, 0x00);                          // SSG-EG off
+        ymDirect(FM_TRI_PART, 0x30 + r, fmTriMul[op]);                 // DT 0, MUL
+        ymDirect(FM_TRI_PART, 0x40 + r, fmTriTL[op] + FM_TRI_LEVEL);   // total level
+        ymDirect(FM_TRI_PART, 0x50 + r, 0x1F);                         // instant attack
+        ymDirect(FM_TRI_PART, 0x60 + r, 0x00);                         // no decay
+        ymDirect(FM_TRI_PART, 0x70 + r, 0x00);                         // no second decay
+        ymDirect(FM_TRI_PART, 0x80 + r, 0x0F);                         // full sustain, fast release
+        ymDirect(FM_TRI_PART, 0x90 + r, 0x00);                         // SSG-EG off
     }
-    ymWrite(FM_TRI_PART, 0xB0 + FM_TRI_IDX, 0x07);   // no feedback, algorithm 7
-    ymWrite(FM_TRI_PART, 0xB4 + FM_TRI_IDX, 0xC0);   // both speakers
-    ymWrite(0, 0x28, FM_TRI_KEY);                    // key off
-    ymRelatchDac();
+    ymDirect(FM_TRI_PART, 0xB0 + FM_TRI_IDX, 0x07);  // no feedback, algorithm 7
+    ymDirect(FM_TRI_PART, 0xB4 + FM_TRI_IDX, 0xC0);  // both speakers
+    ymDirect(0, 0x28, FM_TRI_KEY);                   // key off
+    *(vu8*)0xA04000 = 0x2A;                          // restore the DAC latch
     fmTriPeriod = 0xFFFF;
     fmTriKeyed = 0;
 }
@@ -647,20 +660,23 @@ int main(void)
 
     for (i = 0; i < 4096; i++) dpcmRing[i] = 0x80;
 
-    Z80_requestBus(TRUE);
-    PSG_reset();
-    Z80_releaseBus();
-
-    PSGDAC_init((u32)dpcmRing);
-    buildTriangleWave();
-
     dpcmAvailable = ((u32)dpcmRing >= 0xFF1000) &&
                     (((u32)dpcmRing + 4096) <= 0xFF8000) &&
                     ((((u32)dpcmRing) & 0xFFF) == 0);
+
+    // Upload the driver but leave the Z80 in reset. Everything between here and
+    // PSGDAC_start() is the one window where the 68000 may touch a sound chip
+    // directly, because nothing else is driving the bus.
+    PSGDAC_init((u32)dpcmRing);
+
     Z80_requestBus(TRUE);
+    for (i = 0; i < 4; i++) psgDirect(0x9F | (i << 5));   // silence all four channels
     if (dpcmAvailable) ymDacInit();
     ymTriangleInit();
     Z80_releaseBus();
+
+    buildTriangleWave();
+    PSGDAC_start();
 
     // Tell the Lua side where to put PCM, so it can write 68000 RAM directly and
     // the samples never have to cross the Z80 bus.

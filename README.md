@@ -12,7 +12,7 @@ Currently, frequency-accurate playback of each channel is working. Volume modula
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/crossover-dark.png">
-  <img alt="Pitch map: the volume DAC covers everything below 1920 Hz in V3 and 3107 Hz in V2; above that each voice falls back to the PSG hardware tone generator. The triangle below 109 Hz is reachable only by the volume DAC." src="docs/crossover-light.png">
+  <img alt="Pitch map: the triangle sits on FM at any pitch; the volume DAC covers pulses below 2905 Hz in V2 and 1841 Hz in V3, above which each voice falls back to the PSG hardware tone generator." src="docs/crossover-light.png">
 </picture>
 
 *Which technique covers which pitch, per voice. Red is the volume DAC, blue is the PSG's own tone generator; the hatched zone is where the DAC is not an upgrade but the only option. Full interactive version: **[the crossover map](https://claude.ai/code/artifact/09fba06d-d92a-44e6-b7d8-c447f013e359)**. Details below.*
@@ -67,13 +67,15 @@ Park the tone period at 0 so the channel outputs DC, then rewrite its attenuatio
 
 | variant | voices | cycles | sample rate | 12.5% duty ceiling |
 |---|---|---|---|---|
-| **V3**  | pulse + pulse + triangle | 233 | 15363 Hz | 1920 Hz |
-| **V2**  | pulse + pulse            | 144 | 24858 Hz | 3107 Hz |
-| **V2D** | pulse + pulse + PCM      | 175 | 20455 Hz | 2557 Hz |
+| **V3**  | pulse + pulse + triangle | 243 | 14731 Hz | 1841 Hz |
+| **V2**  | pulse + pulse            | 154 | 23244 Hz | 2905 Hz |
+| **V2D** | pulse + pulse + PCM      | 185 | 19349 Hz | 2419 Hz |
+
+Ten of those cycles in every variant are the service slot — one jump, and the reason the Z80 owns every sound chip on the machine. See below.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/loop-budget-dark.png">
-  <img alt="Z80 cycles per sample for each loop variant: two pulse voices at 63 cycles each, a wave voice at 89, a PCM voice at 31, plus 18 cycles of loop overhead." src="docs/loop-budget-light.png">
+  <img alt="Z80 cycles per sample for each loop variant: two pulse voices at 63 cycles each, a wave voice at 89, a PCM voice at 31, 18 cycles of loop overhead and a 10-cycle service slot." src="docs/loop-budget-light.png">
 </picture>
 
 A 12.5% pulse needs eight slots per period to exist at all, so the ceiling is the sample rate over eight. Above it the voice is handed back to the hardware tone generator: the pitch stays exact and the duty degrades to 50%, which is a far better trade than an aliased 12.5% pulse.
@@ -124,7 +126,7 @@ Measured as spectral error against the NES's own 32-step staircase: volume DAC �
 
 The real value is second-order, and it lands twice:
 
-- **The wave voice leaves the Z80 loop**, shortening it from 233 to 144 cycles. The pulse ceiling goes from 1920 Hz to 3107 Hz — 97% → **100%** of pulse frames in the capture keep their true duty.
+- **The wave voice leaves the Z80 loop**, shortening it from 243 to 154 cycles. The pulse ceiling goes from 1841 Hz to 2905 Hz — 97% → **100%** of pulse frames in the capture keep their true duty.
 - **PSG channel 2 goes free**, so tone-clocked noise stops costing anything and every reachable NES noise period is available at once.
 
 That is why the default mode is FM TRI. The PSG-only path is still one button away.
@@ -132,12 +134,27 @@ That is why the default mode is FM TRI. The PSG-only path is still one button aw
 ### 5. YM2612 channel 6 DAC — for DPCM
 DPCM does not belong on the volume DAC. It would consume the entire Z80 loop, take a PSG channel, and still only get four logarithmic bits. The YM2612's channel-6 DAC is 8-bit linear and, once register 2Ah is latched, costs one store per sample. That is its home.
 
-The samples stream out of 68000 RAM through the Z80's bank window, *not* over the Z80 bus — because every byte the 68000 hands to the Z80 requires stopping the Z80, and stopping the Z80 stops the audio. That is also why parameter updates are diffed: only bytes that actually changed get written, so the per-frame stall is a handful of stores instead of a hole in the sound.
+The samples stream out of 68000 RAM through the Z80's bank window, *not* over the Z80 bus — because every byte the 68000 hands to the Z80 requires stopping the Z80, and stopping the Z80 stops the audio.
 
 Status: the driver path, the ring protocol and the recorder-side `$4011` capture are all in. It is the least exercised part of this and is off by default — set `RECORD_DPCM = true` in the recorder.
 
 ### What this means for the FM ideas in the old TODO
 Two of them are now unnecessary rather than unfinished. The volume DAC produces the duties directly, so there is nothing left for "50% square + FM to color it into 12.5%" to fix, and nothing left for a DC-offset trick on an FM operator to reach. FM's remaining jobs are the ones the PSG genuinely cannot do: the triangle, the DAC channel for DPCM, and extra polyphony above the volume DAC's pitch ceiling if you ever want the high leads to keep their duty. FM is measurably *worse* than the volume DAC at pulses at every pitch tested — best 2-operator FM manages −7.1 dB against a 12.5% target where the DAC gets −18.5 dB at 220 Hz — so it is only worth a pulse slot above the ceiling, where today's fallback is a plain 50% square at −2.2 dB.
+
+
+# One writer
+
+The Z80 owns **every** sound chip write on the machine — not just its own DAC voices, but PSG tone periods, PSG attenuations, the noise control register, and the YM2612 as well. The 68000 does not touch a chip register after boot. It queues `(address, data)` pairs into a page of Z80 RAM and the loop replays one per sample.
+
+That is not tidiness, it is three specific bugs that the split arrangement kept producing:
+
+- **Reaching a chip means stopping the audio.** The 68000 cannot get at the PSG or the YM2612 without holding the Z80 bus, and holding the Z80 bus halts the synthesis loop. Once a frame that is a 60 Hz artefact; doing it while also busy-waiting on the YM2612's status flag makes the hole big enough to hear.
+- **A PSG tone period is two bytes.** A latch byte, then a data byte. With two masters on the bus, one of the loop's attenuation writes can land between them — and the data byte is then applied to the *Z80's* channel instead. In special noise mode the corrupted register is channel 2's period, which is the drum pitch.
+- **The YM2612's part-I address latch is load-bearing.** It sits on register 2Ah so PCM costs one store per sample. Anything else writing part I breaks it. With one writer, restoring it is just another queued pair, in order.
+
+The cost is ten cycles a sample — the service slot is a single jump that the 68000 re-points when it has work, and that the service routine re-points back when the queue drains. What the 68000 still does inside a bus window is patch the loop's immediate operands and append to the queue: plain byte stores, no waits, no ordering rules.
+
+One command per sample is roughly 15,000 chip writes a second, against the ~20 a frame that a register update actually needs, so the queue is always drained long before the next frame arrives.
 
 
 # Controls
@@ -159,7 +176,7 @@ MODE needs a 6-button pad. The on-screen readout shows which loop variant is run
 | file | what it is |
 |---|---|
 | `GeNESis-APU2PSG.c` | the ROM. Reads the shared RAM block, decides technique per voice per frame, drives the PSG |
-| `psgdac.h` | 68000 side of the volume-DAC driver: upload, patch, diff |
+| `psgdac.h` | 68000 side of the driver: upload, patch operands, queue chip writes |
 | `z80_psgdac.s80` | the Z80 driver, and the source of truth for it |
 | `psgdac_z80.h` | assembled driver blob + patch offsets. Generated, checked in, no build step needed |
 | `tools/asmz80.py` | a tiny dependency-free Z80 assembler, so the blob can be regenerated with stock Python |
@@ -174,7 +191,7 @@ python3 tools/asmz80.py z80_psgdac.s80 -o psgdac_z80.h
 python3 tools/simz80.py
 ```
 
-`simz80.py` verifies the duty ratios, the attenuation encoding, the wave-table walk, that a disabled voice costs the same cycles as an enabled one, and the loop lengths the sample rates are derived from. If you change the loop, the sample rates in `psgdac.h` and `DPCM_RATE` in the recorder change with it.
+`simz80.py` verifies the duty ratios, the attenuation encoding, the wave-table walk, that a disabled voice costs the same cycles as an enabled one, the loop lengths the sample rates are derived from, and the command queue — that triples are replayed in order, never more than one a sample, that the service slot switches itself back off when drained, and that pulse A's phase survives the detour. If you change the loop, the sample rates in `psgdac.h` and `DPCM_RATE` in the recorder change with it.
 
 
 # Data format
