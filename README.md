@@ -25,7 +25,10 @@ Requirements:
 - Python 3, only if you want to rebuild the Z80 driver (the assembled blob is checked in)
 
 `rom.bin` is checked in and built from the current source — load that and it
-should just work. To change the code you need SGDK; see **[BUILDING.md](BUILDING.md)**,
+should just work. **The capture is baked into the cart and starts playing at
+boot with no script at all** (press B to switch to the live script path), so any
+Genesis emulator — or an Everdrive — can play it standalone. That also makes it
+the control experiment when a crash might be script-related. To change the code you need SGDK; see **[BUILDING.md](BUILDING.md)**,
 which also records exactly how the checked-in ROM was produced.
 
 **If it sounds like all squares, you are running the old ROM.** The current build
@@ -178,6 +181,7 @@ One command per sample is roughly 15,000 chip writes a second, against the ~20 a
 
 | button | what it does |
 |---|---|
+| B | toggle the data source: **CART** (the capture embedded in the ROM, boot default) vs **SCRIPT** (live shared-memory from Lua) |
 | START | cycle synthesis mode: **HW** (everything on hardware tone generators) → **DAC** (volume-DAC pulses and triangle) → **DAC+NOISE** (also tone-clocked noise, which costs the triangle) → **FM TRI** (triangle to FM, so nothing is contested — the default) |
 | X / Y / Z | mute pulse 1 / pulse 2 / triangle |
 | A | mute noise (starts muted) |
@@ -198,6 +202,7 @@ MODE needs a 6-button pad. The on-screen readout shows which loop variant is run
 | `psgdac_z80.h` | assembled driver blob + patch offsets. Generated, checked in, no build step needed |
 | `tools/asmz80.py` | a tiny dependency-free Z80 assembler, so the blob can be regenerated with stock Python |
 | `tools/simz80.py` | runs the assembled driver on a toy Z80 and checks the waveforms it emits |
+| `tools/gen_apudata.py` | packs `nes_apu_data.txt` into `apudata.h`, the capture the ROM plays standalone |
 | `tools/build_map.py` | generates `technique-map.html` from the cycle counts and the capture. The PNGs in `docs/` are screenshots of its figures |
 | `technique-map.html` | the generated map, standalone. Open it in a browser, or read the hosted copy linked above |
 

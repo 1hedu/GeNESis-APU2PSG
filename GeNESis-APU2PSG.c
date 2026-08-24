@@ -33,6 +33,7 @@
 #include <psg.h>
 
 #include "psgdac.h"
+#include "apudata.h"
 
 // -----------------------------------------------------------------------------
 // Sound chip access.
@@ -198,6 +199,18 @@ static const char* const variantName[PSGDAC_NVARIANT] = {"V3", "V2", "V2D"};
 
 static u8 synthMode = MODE_FM;
 static u8 dpcmAvailable = 0;
+
+// -----------------------------------------------------------------------------
+// Where the APU stream comes from. CART plays the capture baked into the ROM --
+// no emulator scripting involved, so it runs anywhere, which also makes it the
+// control experiment when a crash might be script-related. SCRIPT is the live
+// shared-memory path. B toggles; CART is the boot default so a bare cart makes
+// sound immediately.
+// -----------------------------------------------------------------------------
+#define SRC_CART    0
+#define SRC_SCRIPT  1
+static u8  dataSource = SRC_CART;
+static u16 cartFrame  = 0;
 
 // -----------------------------------------------------------------------------
 // Manual test-tone controls, kept from the original build.
@@ -435,6 +448,41 @@ static void readApuBlock(void)
     }
 }
 
+// Decode one frame of the embedded capture into the same variables the script
+// path fills, so everything downstream is identical.
+static void readCartFrame(void)
+{
+    const u8 *p = apuData + (u32)cartFrame * APU_DATA_STRIDE;
+    u16 w;
+
+    w = (p[0] << 8) | p[1];
+    p1Period = w & 0x7FF; p1Duty = (w >> 11) & 3; p1On = (w >> 13) & 1;
+    p1Vol = p[2] & 0x0F;
+
+    w = (p[3] << 8) | p[4];
+    p2Period = w & 0x7FF; p2Duty = (w >> 11) & 3; p2On = (w >> 13) & 1;
+    p2Vol = p[5] & 0x0F;
+
+    w = (p[6] << 8) | p[7];
+    triPeriod = w & 0x7FF; triOn = (w >> 11) & 1;
+
+    if (!manualNoiseControl)
+    {
+        noisePeriodIdx = p[8] & 0x0F;
+        noiseMode      = (p[8] >> 4) & 1;
+        noiseOn        = (p[8] >> 5) & 1;
+        noiseVol       = p[9] & 0x0F;
+    }
+    else noiseOn = 1;
+
+    dpcmOn   = 0;                      // the capture carries no PCM
+    haveExt  = 1;                      // fields are NES-native, like v2
+    nesFrame = cartFrame & 0xFF;
+
+    cartFrame++;
+    if (cartFrame >= APU_DATA_FRAMES) cartFrame = 0;
+}
+
 static void clearApuBlock(void)
 {
     u8 i;
@@ -662,6 +710,11 @@ static void handleInput(u16 changed)
     }
     else
     {
+        if (changed & BUTTON_B)
+        {
+            dataSource = !dataSource;
+            cartFrame = 0;
+        }
         if (changed & BUTTON_X) chanEnable[0] = !chanEnable[0];
         if (changed & BUTTON_Y) chanEnable[1] = !chanEnable[1];
         if (changed & BUTTON_Z) chanEnable[2] = !chanEnable[2];
@@ -675,8 +728,12 @@ static void drawUi(void)
     char t[64];
     u8 y = 10;
 
-    sprintf(t, "MODE %-9s  PROTO v%d  %5d Hz", modeName[synthMode],
-            haveExt ? 2 : 1, psgdacRate[psgdacVariant]);
+    if (dataSource == SRC_CART)
+        sprintf(t, "MODE %-9s  CART %4d/%d", modeName[synthMode],
+                cartFrame, APU_DATA_FRAMES);
+    else
+        sprintf(t, "MODE %-9s  SCRIPT v%d  %5d Hz", modeName[synthMode],
+                haveExt ? 2 : 1, psgdacRate[psgdacVariant]);
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
 
     sprintf(t, "LOOP %-3s (%d cyc)  DPCM %s%s", variantName[psgdacVariant],
@@ -707,7 +764,7 @@ static void drawUi(void)
 
     VDP_clearText(2, y, 38);
     VDP_drawText(manualNoiseControl ? "MANUAL NOISE  B/C period  Z mode"
-                                    : "START mode  MODE noise-audition", 2, y);
+                                    : "START mode  B cart/script  MODE noise", 2, y);
 }
 
 // SGDK calls main with a flag saying whether this was a cold boot; declaring it
@@ -753,7 +810,8 @@ int main(bool hardReset)
         prevButtons = joypad;
 
         handleInput(changed);
-        readApuBlock();
+        if (dataSource == SRC_CART) readCartFrame();
+        else                        readApuBlock();
         synthUpdate();      // fills a local command buffer; no bus, no chips
 
         // The only per-frame bus window: patch changed loop operands and copy
