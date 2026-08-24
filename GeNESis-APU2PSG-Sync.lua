@@ -40,6 +40,36 @@ local READ_INTERVAL = 0.008            -- seconds between file polls
 local VOL_TO_ATTEN = {[0]=15, 12, 9, 7, 6, 5, 4, 3, 3, 2, 2, 1, 1, 1, 0, 0}
 local NOISE_FIXED  = {[0]=0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2}
 
+
+-- ---------------------------------------------------------------- discovery --
+-- The ROM's shared block is a linker-placed C object, so its address is not
+-- knowable in advance -- and hardcoding one is what used to crash the ROM, by
+-- landing on SGDK's saved program counter. Find it by scanning RAM for the
+-- magic and checking that the block's 'self' field points back at where we
+-- found it. Done once; a false positive cannot survive the self check.
+local MAGIC = { 0x47, 0x41, 0x50, 0x55 }   -- 'GAPU'
+local base                                  -- discovered block address
+
+local function rd32(a)
+    return memory.readbyte(a) * 16777216 + memory.readbyte(a + 1) * 65536
+         + memory.readbyte(a + 2) * 256   + memory.readbyte(a + 3)
+end
+
+local function findBlock()
+    for a = base + OFF_LEGACY + 0, 0xFFFFFC, 4 do
+        if memory.readbyte(a) == MAGIC[1] and memory.readbyte(a + 1) == MAGIC[2]
+       and memory.readbyte(a + 2) == MAGIC[3] and memory.readbyte(a + 3) == MAGIC[4] then
+            local self_ = rd32(a + 4) % 0x1000000 + base + OFF_LEGACY + 0
+            -- the ROM stores the raw pointer; compare only the RAM-relevant bits
+            if (rd32(a + 4) % 0x10000) == (a % 0x10000) then return a end
+        end
+    end
+    return nil
+end
+
+-- Offsets inside the block, matching the ApuBlock struct in the ROM.
+local OFF_RING, OFF_LEGACY, OFF_EXT = 8, 12, 28
+
 local function clamp(v, lo, hi)
     if v < lo then return lo end
     if v > hi then return hi end
@@ -142,35 +172,35 @@ end
 local function writeBlocks(f)
     -- v1 block, so an older ROM build still plays.
     if f.p1_on == 1 and f.p1_vol > 0 then
-        w16(0xFF0000, pulsePeriodToPsg(f.p1_period)); w8(0xFF0002, atten(f.p1_vol))
-    else w8(0xFF0002, 15) end
-    w8(0xFF0008, f.p1_duty)
+        w16(base + OFF_LEGACY + 0, pulsePeriodToPsg(f.p1_period)); w8(base + OFF_LEGACY + 2, atten(f.p1_vol))
+    else w8(base + OFF_LEGACY + 2, 15) end
+    w8(base + OFF_LEGACY + 8, f.p1_duty)
 
     if f.p2_on == 1 and f.p2_vol > 0 then
-        w16(0xFF0003, pulsePeriodToPsg(f.p2_period)); w8(0xFF0005, atten(f.p2_vol))
-    else w8(0xFF0005, 15) end
+        w16(base + OFF_LEGACY + 3, pulsePeriodToPsg(f.p2_period)); w8(base + OFF_LEGACY + 5, atten(f.p2_vol))
+    else w8(base + OFF_LEGACY + 5, 15) end
 
     if f.tri_on == 1 then
-        w16(0xFF000A, triPeriodToPsg(f.tri_period)); w8(0xFF000C, 4); w8(0xFF000D, 1)
-    else w16(0xFF000A, 0); w8(0xFF000C, 15); w8(0xFF000D, 0) end
+        w16(base + OFF_LEGACY + 10, triPeriodToPsg(f.tri_period)); w8(base + OFF_LEGACY + 12, 4); w8(base + OFF_LEGACY + 13, 1)
+    else w16(base + OFF_LEGACY + 10, 0); w8(base + OFF_LEGACY + 12, 15); w8(base + OFF_LEGACY + 13, 0) end
 
     if f.noise_on == 1 and f.noise_vol > 0 then
-        w8(0xFF0006, 0xE0 + ((f.noise_mode == 0) and 4 or 0) + NOISE_FIXED[f.noise_period])
-        w8(0xFF0007, atten(f.noise_vol))
-    else w8(0xFF0007, 15) end
-    w8(0xFF0009, f.frame)
+        w8(base + OFF_LEGACY + 6, 0xE0 + ((f.noise_mode == 0) and 4 or 0) + NOISE_FIXED[f.noise_period])
+        w8(base + OFF_LEGACY + 7, atten(f.noise_vol))
+    else w8(base + OFF_LEGACY + 7, 15) end
+    w8(base + OFF_LEGACY + 9, f.frame)
 
     -- v2 block, NES-native, which is what the volume-DAC allocator needs.
-    w8(0xFF0011, f.p1_period % 256); w8(0xFF0012, math.floor(f.p1_period / 256))
-    w8(0xFF0013, f.p1_vol); w8(0xFF0014, f.p1_duty); w8(0xFF0015, f.p1_on)
-    w8(0xFF0016, f.p2_period % 256); w8(0xFF0017, math.floor(f.p2_period / 256))
-    w8(0xFF0018, f.p2_vol); w8(0xFF0019, f.p2_duty); w8(0xFF001A, f.p2_on)
-    w8(0xFF001B, f.tri_period % 256); w8(0xFF001C, math.floor(f.tri_period / 256))
-    w8(0xFF001D, f.tri_on)
-    w8(0xFF001E, f.noise_period); w8(0xFF001F, f.noise_mode)
-    w8(0xFF0020, f.noise_vol); w8(0xFF0021, f.noise_on)
-    w8(0xFF0022, f.dpcm_on); w8(0xFF0023, f.frame)
-    w8(0xFF0010, 0x47)                  -- magic last, so the ROM never sees half a block
+    w8(base + OFF_EXT + 1, f.p1_period % 256); w8(base + OFF_EXT + 2, math.floor(f.p1_period / 256))
+    w8(base + OFF_EXT + 3, f.p1_vol); w8(base + OFF_EXT + 4, f.p1_duty); w8(base + OFF_EXT + 5, f.p1_on)
+    w8(base + OFF_EXT + 6, f.p2_period % 256); w8(base + OFF_EXT + 7, math.floor(f.p2_period / 256))
+    w8(base + OFF_EXT + 8, f.p2_vol); w8(base + OFF_EXT + 9, f.p2_duty); w8(base + OFF_EXT + 10, f.p2_on)
+    w8(base + OFF_EXT + 11, f.tri_period % 256); w8(base + OFF_EXT + 12, math.floor(f.tri_period / 256))
+    w8(base + OFF_EXT + 13, f.tri_on)
+    w8(base + OFF_EXT + 14, f.noise_period); w8(base + OFF_EXT + 15, f.noise_mode)
+    w8(base + OFF_EXT + 16, f.noise_vol); w8(base + OFF_EXT + 17, f.noise_on)
+    w8(base + OFF_EXT + 18, f.dpcm_on); w8(base + OFF_EXT + 19, f.frame)
+    w8(base + OFF_EXT + 0, 0x47)                  -- magic last, so the ROM never sees half a block
 end
 
 -- ---------------------------------------------------------------- PCM -------
@@ -179,10 +209,7 @@ local ringBase, ringCursor = 0, 0
 local function writePcm(hex)
     if not PLAY_DPCM or not hex or hex == "" then return end
     if ringBase < 0xFF1000 or ringBase >= 0xFF8000 then
-        ringBase = memory.readbyte(0xFF002C) * 16777216
-                 + memory.readbyte(0xFF002D) * 65536
-                 + memory.readbyte(0xFF002E) * 256
-                 + memory.readbyte(0xFF002F)
+        ringBase = rd32(base + OFF_RING) % 0x1000000
         if ringBase < 0xFF1000 or ringBase >= 0xFF8000 then return end
     end
     for i = 1, #hex - 1, 2 do
@@ -198,7 +225,21 @@ end
 local syncTimer = os.clock()
 local frames = 0
 
+local announced = false
+
 gens.registerafter(function()
+    if not base then
+        base = findBlock()
+        if not base then
+            if not announced then
+                announced = true
+                print("Waiting for the ROM: no GAPU block in RAM yet.")
+            end
+            return
+        end
+        print(string.format("Found ROM block at 0x%06X", base))
+    end
+
     if os.clock() - syncTimer >= READ_INTERVAL then
         syncTimer = os.clock()
         readMore()

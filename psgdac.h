@@ -143,11 +143,11 @@ static inline u8 psgdacSpanByte(u8 atten) { return (u8)((atten - 0x0F) & 0xFF); 
 
 // ---- lifecycle -------------------------------------------------------------
 
-// Upload the driver, leaving the Z80 in reset. Do NOT initialise the sound
-// chips before PSGDAC_start(): on the Mega Drive the Z80 reset line also resets
-// the YM2612, so FM registers written now are wiped when reset deasserts. Init
-// them after start, inside a bus-request window -- a bus request stalls the Z80
-// without resetting anything.
+// Pulse the Z80's reset, upload the driver, and RETURN WITH THE BUS STILL HELD.
+// Reset is deasserted before the upload, which matters because the Z80 reset
+// line also resets the YM2612 -- anything written to the FM chip while it is
+// asserted is lost. Holding the bus keeps the Z80 stopped regardless, so the
+// caller can initialise the sound chips directly, then call PSGDAC_start().
 static void PSGDAC_init(u32 dpcmRingBase)
 {
     u16 i;
@@ -156,6 +156,7 @@ static void PSGDAC_init(u32 dpcmRingBase)
 
     Z80_requestBus(TRUE);
     Z80_startReset();
+    Z80_endReset();     // Z80 wants to run, but we hold the bus; YM now awake
 
     for (i = 0; i < PSGDAC_Z80_SIZE; i++)
         *Z80_MEM(i) = psgdac_z80[i];
@@ -192,8 +193,6 @@ static void PSGDAC_init(u32 dpcmRingBase)
     z80w16(P_svc + 1, psgdacEntry[PSGDAC_V3]);
     z80w16(P_svcout + 1, psgdacEntry[PSGDAC_V3]);
 
-    Z80_releaseBus();       // still in reset; the caller initialises the chips
-
     for (i = 0; i < 3; i++)
     {
         psgdacVoice[i].delta = 0; psgdacVoice[i].duty = 0;
@@ -206,25 +205,23 @@ static void PSGDAC_init(u32 dpcmRingBase)
     cmdCount = 0;
 }
 
-// Let the loop run.  From here on the Z80 owns every chip register.
+// Release the bus held since PSGDAC_init. The loop starts here, and from this
+// point the Z80 owns every chip register.
 static void PSGDAC_start(void)
 {
-    Z80_requestBus(TRUE);
-    Z80_endReset();
-    Z80_releaseBus();
     psgdacReady = 1;
+    Z80_releaseBus();
 }
 
 // Fill the 256-byte wave table.  One page = eight copies of a 32-step waveform,
 // so the inner loop can index it with the raw phase high byte and no shifting.
 // Entries are finished PSG bytes for channel 2 (0xD0 | attenuation).
+// Call between PSGDAC_init and PSGDAC_start, while the bus is already held.
 static void PSGDAC_loadWave(const u8 *atten32)
 {
     u16 i;
-    Z80_requestBus(TRUE);
     for (i = 0; i < 256; i++)
         *Z80_MEM(Z80_WAVE + i) = 0xD0 | (atten32[i >> 3] & 0x0F);
-    Z80_releaseBus();
 }
 
 // ---- per-frame parameter setting (call, then flush) ------------------------

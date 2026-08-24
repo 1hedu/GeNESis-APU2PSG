@@ -139,11 +139,34 @@ static const u8 noiseNeedsCh2[16]  = {1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 
 
 // -----------------------------------------------------------------------------
 // Shared memory protocol with the Lua side.
+//
+// This block used to sit at a hardcoded 0xFF0000, which is inside the linker's
+// RAM area. It worked by luck and then stopped: SGDK's task_pc and task_regs
+// landed at 0xFF001A and 0xFF001E, so zeroing the block every frame wiped the
+// saved program counter the vblank handler returns through. An illegal
+// instruction at PC 0x70 -- a jump into the vector table -- is what that looks
+// like from the outside.
+//
+// So the block is a real C object now, and the linker guarantees nothing else
+// shares it. Lua finds it by scanning RAM for the magic and checking that the
+// 'self' field points back at where it was found; nothing on either side hard-
+// codes an address any more.
 // -----------------------------------------------------------------------------
-#define APU_LEGACY  ((volatile u8*)0xFF0000)    // v1 block, PSG-native, still honoured
-#define APU_EXT     ((volatile u8*)0xFF0010)    // v2 block, NES-native
-#define APU_MAGIC   0x47                        // 'G' -- v2 present this frame
-#define APU_RINGPTR ((volatile u32*)0xFF002C)   // ROM publishes the PCM ring here
+#define APU_BLOCK_MAGIC 0x47415055UL            // 'GAPU'
+#define APU_MAGIC       0x47                    // 'G' -- v2 fields valid this frame
+
+typedef struct {
+    u32 magic;          // +0   'GAPU', written once at boot
+    u32 self;           // +4   this struct's own address, so a scan can verify
+    u32 ring;           // +8   the PCM ring's address, or 0
+    u8  legacy[16];     // +12  v1 block, PSG-native
+    u8  ext[32];        // +28  v2 block, NES-native
+} ApuBlock;
+
+static volatile ApuBlock apuBlock;
+
+#define APU_LEGACY  (apuBlock.legacy)
+#define APU_EXT     (apuBlock.ext)
 
 // v2 field offsets inside APU_EXT
 enum {
@@ -697,25 +720,22 @@ int main(void)
                     (((u32)dpcmRing + 4096) <= 0xFF8000) &&
                     ((((u32)dpcmRing) & 0xFFF) == 0);
 
-    PSGDAC_init((u32)dpcmRing);     // upload; the Z80 is left in reset
+    // One bus window for the whole of boot. PSGDAC_init pulses the Z80's reset
+    // and then holds the bus: reset is already deasserted, so the YM2612 -- which
+    // shares that reset line -- is awake and will keep what we write, while the
+    // held bus keeps the Z80 stopped so the 68000 is the only master and may
+    // write chips directly and busy-wait on the YM.
+    PSGDAC_init((u32)dpcmRing);
     buildTriangleWave();
-    PSGDAC_start();                 // Z80 out of reset, loop running on dummies
-
-    // Chip init AFTER the Z80 leaves reset, because the Z80 reset line also
-    // resets the YM2612 -- registers written while reset is asserted are wiped
-    // the moment it deasserts. A bus request is different: it stalls the Z80
-    // without resetting anything, so inside this window the 68000 is the only
-    // master and may write chips directly and busy-wait on the YM. The loop is
-    // still aimed at dummy targets here, so no writes of ours can be split.
-    Z80_requestBus(TRUE);
     for (i = 0; i < 4; i++) psgDirect(0x9F | (i << 5));   // silence all four channels
     if (dpcmAvailable) ymDacInit();
     ymTriangleInit();
-    Z80_releaseBus();
+    PSGDAC_start();                 // release the bus; the loop begins here
 
-    // Tell the Lua side where to put PCM, so it can write 68000 RAM directly and
-    // the samples never have to cross the Z80 bus.
-    *APU_RINGPTR = dpcmAvailable ? (u32)dpcmRing : 0;
+    // Publish the block so Lua can find it, magic last.
+    apuBlock.ring  = dpcmAvailable ? (u32)dpcmRing : 0;
+    apuBlock.self  = (u32)&apuBlock;
+    apuBlock.magic = APU_BLOCK_MAGIC;
 
     JOY_setEventHandler(joyEvent);
 
@@ -741,7 +761,6 @@ int main(void)
         Z80_releaseBus();
 
         clearApuBlock();
-        *APU_RINGPTR = dpcmAvailable ? (u32)dpcmRing : 0;
 
         drawUi();
         VDP_waitVSync();

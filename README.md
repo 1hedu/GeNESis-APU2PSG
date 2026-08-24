@@ -229,7 +229,7 @@ Two conversion bugs went with it. NES volume is linear 0..15 and PSG attenuation
 - <s>During playback, the noise channel only, must be enabled by pressing A on the controller.</s> Still true, and still for the same reason: with no Lua feeding it, an enabled noise channel just blares.
 - A live synced version <s>exists,</s> is added.
 - <s>Gens r57shell may be hard to find. I downloaded it, and tried a couple days later from the same location, and the link was broken.  I'm working on a BizHawk version of the Gens lua.</s> Link is back.
-- The shared block lives at a hardcoded `0xFF0000`, which is inside SGDK's own RAM area. It has always worked here, but it is luck, not design — if a future SGDK build puts something live at those addresses, that is the first place to look.
+- <s>The shared block lives at a hardcoded `0xFF0000`, which is inside SGDK's own RAM area. It has always worked here, but it is luck, not design.</s> The luck ran out: SGDK put `task_pc` at `0xFF001A`, so zeroing the block each frame wiped the program counter the vblank handler returns through, and the ROM died with an illegal instruction at `0x70` — a jump into the vector table. The block is a linker-placed C object now, and the Lua scripts find it by scanning RAM for a `GAPU` magic whose `self` field points back at itself. Neither side hardcodes an address.
 - Thank you to AlyJames, who helped elucidate the potential of pulse waves on the Genesis, for me, a random DM.
 
 # TODO:
