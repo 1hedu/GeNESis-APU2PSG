@@ -31,7 +31,10 @@ end
 local VOL_TO_ATTEN = {[0]=15, 12, 9, 7, 6, 5, 4, 3, 3, 2, 2, 1, 1, 1, 0, 0}
 
 -- Nearest of the PSG's three fixed noise rates for each NES noise period.
-local NOISE_FIXED = {[0]=0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 2, 2}
+-- The shift register advances once per tone-3 output cycle, so the fixed
+-- rates land on periods 9, 11 and 13. Only the legacy v1 block uses this;
+-- the ROM does the full mapping itself from the v2 block.
+local NOISE_FIXED = {[0]=0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2}
 
 -- ---------------------------------------------------------------- helpers ---
 local function clamp(v, lo, hi)

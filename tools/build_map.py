@@ -48,7 +48,10 @@ NESPER = [4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4
 FIXED = {0: 16, 1: 32, 2: 64}
 noise_rows = []
 for i, p in enumerate(NESPER):
-    ideal = PSGCLK * p / (16 * NES)
+    # The shift register advances once per tone-3 output cycle: clock/(32*P).
+    # The three fixed rates are documented as clock/512, /1024, /2048 *and* as
+    # tone periods 0x10, 0x20, 0x40 -- only this divisor satisfies both.
+    ideal = PSGCLK * p / (32 * NES)
     best = min(FIXED, key=lambda r: abs(math.log(FIXED[r] / max(ideal, 0.25))))
     err = 100 * (FIXED[best] - ideal) / ideal
     ch2 = max(1, min(1023, round(ideal)))
@@ -91,16 +94,22 @@ def band(f0, f1, y, cls, label, sub=""):
 def fmt(f):
     return "%d" % round(f) if f >= 100 else "%.0f" % f
 
+# Ordered so the default configuration reads first: triangle on FM, which frees
+# the loop to run V2 and frees PSG channel 2 for the noise generator.
 lanes = [
+    ("Triangle", "on FM", [
+        (FMIN, FMAX, "s-pcm", "YM2612, algorithm 7",
+         "four carriers at MUL 1/3/5/7 -- no ceiling, no floor, no Z80 cycles"),
+    ]),
+    ("Pulse 1 &amp; 2", "loop in V2", [
+        (FMIN, V["V2"]["ceil8"], "s-dac", "Volume DAC", "the loop is shorter, so the ceiling is higher"),
+        (V["V2"]["ceil8"], FMAX, "s-hw", "Hardware tone", "pitch exact, duty falls back to 50%"),
+    ]),
     ("Pulse 1 &amp; 2", "loop in V3", [
         (FMIN, V["V3"]["ceil8"], "s-dac", "Volume DAC", "true 12.5 / 25 / 75% duty"),
         (V["V3"]["ceil8"], FMAX, "s-hw", "Hardware tone", "pitch exact, duty falls back to 50%"),
     ]),
-    ("Pulse 1 &amp; 2", "loop in V2", [
-        (FMIN, V["V2"]["ceil8"], "s-dac", "Volume DAC", "faster loop, higher ceiling"),
-        (V["V2"]["ceil8"], FMAX, "s-hw", "Hardware tone", "pitch exact, duty falls back to 50%"),
-    ]),
-    ("Triangle", "loop in V3", [
+    ("Triangle", "on PSG, V3", [
         (FMIN, PSG_FLOOR, "s-dac s-only", "DAC only", "the tone generator physically cannot reach here"),
         (PSG_FLOOR, V["V3"]["ceil32"], "s-dac", "Volume DAC", "32-step NES staircase"),
         (V["V3"]["ceil32"], FMAX, "s-hw", "Hardware tone", "staircase runs out of steps"),
@@ -498,7 +507,7 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
   <div class="stat b"><span class="stat-v">{NEEDS_CH2}%</span>
     <span class="stat-k">of noise frames need a period the three fixed rates miss</span></div>
   <div class="stat d"><span class="stat-v">{REACHABLE}/16</span>
-    <span class="stat-k">noise periods reachable once channel 2 clocks the shift register</span></div>
+    <span class="stat-k">noise periods reachable once channel 2 clocks the shift register &mdash; free, now the triangle is on FM</span></div>
 </div>
 
 <section>
@@ -513,9 +522,17 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
     period to exist at all, so the loop's sample rate divided by eight <em>is</em> the ceiling. Above it,
     the voice goes back to the hardware tone generator, where the pitch stays exact and only the duty
     degrades to 50%.</p>
+    <p>Moving the triangle to FM is what makes the top lane possible. Four operators
+    in parallel at MUL 1, 3, 5, 7 <em>are</em> a triangle, additively &mdash; exact in pitch
+    to a third of a cent, with none of the 2&nbsp;dB quantisation that flattens the
+    staircase's peaks on a logarithmic DAC. It costs no Z80 cycles, which shortens
+    the loop from 233 to 144 and lifts the pulse ceiling from
+    {V3CEIL}&nbsp;Hz to {V2CEIL}&nbsp;Hz; and it costs no PSG channel, which is what
+    makes the noise trade below disappear.</p>
   </div>
   <figure>
     <div class="legend">
+      <span class="lg"><span class="sw pcm"></span>FM &mdash; exact pitch, no ceiling, no PSG channel</span>
       <span class="lg"><span class="sw dac"></span>Volume DAC &mdash; any duty, pitch-limited</span>
       <span class="lg"><span class="sw hw"></span>Hardware tone &mdash; any pitch, 50% only</span>
     </div>
@@ -565,16 +582,23 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
 
 <section>
   <div class="sechead">
-    <span class="lab">Figure 3 &middot; the trade</span>
-    <h2>Noise costs the triangle</h2>
+    <span class="lab">Figure 3 &middot; the trade, resolved</span>
+    <h2>Noise wanted the triangle's channel</h2>
   </div>
   <div class="prose">
     <p>The PSG's noise generator has three fixed rates. The NES has sixteen periods in two modes.
     Setting the PSG's rate selector to 3 clocks the shift register from <em>tone channel 2</em> instead,
-    and channel 2's period is 10 bits &mdash; which brings {REACHABLE} of the 16 within about 1%. Only the fastest
-    is out of range: it wants a 447&nbsp;kHz shift rate and the chip tops out at half that.</p>
-    <p>The price is channel 2, which is where the triangle lives. That is a real choice, not a free win,
-    so it sits on the START button rather than being always on.</p>
+    and channel 2's period is 10 bits &mdash; which brings {REACHABLE} of the 16 within 3%. The two fastest
+    are out of range: they want shift-register periods below 1.</p>
+    <p>The shift register advances once per tone-3 output cycle, so its rate is clock/(32&thinsp;&times;&thinsp;P).
+    That divisor is worth stating because getting it wrong puts every drum an octave out: the three fixed
+    rates are documented both as clock/512, /1024, /2048 <em>and</em> as tone periods 0x10, 0x20, 0x40, and
+    only this reading satisfies both. It also places the fixed rates on periods 9, 11 and 13 &mdash; to within
+    0.8%, which is presumably why the chip has them.</p>
+    <p>The price used to be channel 2, which is where the triangle lived. With the triangle on FM there is
+    nothing to pay, so this mode is simply on &mdash; and it stays on rate 3 for every period rather than
+    switching back and forth, because writing the noise control register resets the shift register and a
+    song that alternates would restart its noise pattern on every switch.</p>
   </div>
   <figure>
     <div class="legend">
@@ -584,8 +608,8 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
     </div>
     <div class="figbody">{FIG3}</div>
     <figcaption>Bars above the strip are each period's share of noise-active frames in this repo's
-    capture. Only period&nbsp;6 sees real use among the ones a fixed rate covers &mdash; drums almost never
-    land on one of the three.</figcaption>
+    capture. Period&nbsp;13 is the one heavily-used period a fixed rate covers, and it accounts for most of
+    the {FIXEDSHARE}% that do not need channel 2.</figcaption>
     <details>
       <summary>Table view</summary>
       <div class="tbl"><table>
@@ -622,15 +646,17 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
       <span class="lab">Tone-clocked noise</span>
       <h3>Channel 2 as a shift clock</h3>
       <p>Turns 3 reachable noise periods into {REACHABLE}, in both long and short mode. Short mode needs its own
-      table: the NES sequence is 93 steps to the PSG's 15, so it matches pitch rather than clock.</p>
-      <p class="cost"><b>costs</b> the triangle &middot; <b>gives</b> the drum kit</p>
+      table: the NES sequence is 93 steps to the PSG's 15, so it matches pitch rather than clock &mdash; which
+      also lifts the two fastest periods back into range.</p>
+      <p class="cost"><b>costs</b> nothing, once the triangle is on FM &middot; <b>gives</b> the drum kit</p>
     </div>
     <div class="card pcm">
-      <span class="lab">YM2612 DAC</span>
-      <h3>The one job for FM</h3>
-      <p>DPCM does not fit on the volume DAC &mdash; it would eat the whole loop for four logarithmic bits.
-      Channel 6's 8-bit linear DAC costs one store per sample once register 2Ah is latched.</p>
-      <p class="cost"><b>costs</b> 31 cycles &middot; <b>gives</b> the sampled channel</p>
+      <span class="lab">YM2612</span>
+      <h3>Triangle, and the sampled channel</h3>
+      <p>Four parallel operators are a triangle outright, at any pitch, for no Z80 time and no PSG channel.
+      Channel 6's 8-bit linear DAC takes DPCM, which does not fit on the volume DAC &mdash; that would eat the
+      whole loop for four logarithmic bits.</p>
+      <p class="cost"><b>costs</b> 2 FM channels &middot; <b>gives</b> the triangle, the samples, and channel 2 back</p>
     </div>
   </div>
 </section>
@@ -685,6 +711,9 @@ out = (HTML
        .replace("{PSG_FLOOR}", "%d" % round(PSG_FLOOR))
        .replace("{TRI_CEIL}", "%d" % round(V["V3"]["ceil32"]))
        .replace("{NES_TRI_FLOOR}", "%d" % round(NES_TRI_FLOOR))
+       .replace("{V3CEIL}", "%d" % round(V["V3"]["ceil8"]))
+       .replace("{V2CEIL}", "%d" % round(V["V2"]["ceil8"]))
+       .replace("{FIXEDSHARE}", "%.1f" % (100.0 - NEEDS_CH2_SHARE))
        .replace("{LOOP_TABLE}", loop_table)
        .replace("{NOISE_TABLE}", noise_table))
 

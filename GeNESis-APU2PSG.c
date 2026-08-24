@@ -63,17 +63,26 @@ static const u8 nesVolToAtten[16] = {15, 12, 9, 7, 6, 5, 4, 3, 3, 2, 2, 1, 1, 1,
 static const u8 dutyThreshold[4] = {32, 64, 128, 192};   // 12.5, 25, 50, 75 %
 
 // Channel-2 tone period that clocks the noise generator at the NES rate.
-// White (long) mode matches the shift rate; periodic (short) mode matches
+//
+// The shift register advances once per tone-3 output cycle, so its rate is
+// clock/(32*P) -- the same as the tone frequency, not twice it. Two documented
+// facts pin this down and agree: the three fixed rates are clock/512, /1024,
+// /2048, and they are equivalent to tone periods 0x10, 0x20, 0x40. Only
+// clock/(32*P) satisfies both. Getting this wrong puts every drum an octave out.
+//
+// White (long) mode matches the shift rate. Periodic (short) mode matches
 // perceived pitch instead, because the NES's short sequence is 93 steps to the
 // PSG's 15 and matching the clock would put it six octaves out.
-static const u16 noisePeriodWhite[16]    = {1, 1, 2, 4, 8, 12, 16, 20, 25, 32, 47, 63, 95, 127, 254, 508};
-static const u16 noisePeriodPeriodic[16] = {3, 6, 12, 25, 50, 74, 99, 124, 157, 197, 294, 394, 591, 787, 1023, 1023};
+static const u16 noisePeriodWhite[16]    = {1, 1, 1, 2, 4, 6, 8, 10, 13, 16, 24, 32, 48, 63, 127, 254};
+static const u16 noisePeriodPeriodic[16] = {2, 3, 6, 12, 25, 37, 50, 62, 78, 98, 147, 197, 295, 394, 788, 1023};
 
 // Nearest of the PSG's three fixed noise rates, and whether that nearest is more
-// than 25% out.  Only indices 6, 7, 9 and 11 are close; the other twelve need
-// channel 2.  That is the whole answer to "can we do all 32 noise sounds".
-static const u8 noiseFixedRate[16] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 2, 2};
-static const u8 noiseNeedsCh2[16]  = {1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1};
+// than 25% out. The fixed rates land on indices 9, 11 and 13 -- to within 0.8%,
+// which is why they exist at all. Everything else needs channel 2. Indices 0 and
+// 1 want a period below 1 and are out of the chip's reach in white mode; in
+// periodic mode the 93-to-15 pitch factor lifts them back into range.
+static const u8 noiseFixedRate[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2};
+static const u8 noiseNeedsCh2[16]  = {1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1};
 
 // -----------------------------------------------------------------------------
 // Shared memory protocol with the Lua side.
@@ -105,12 +114,13 @@ static u8 dpcmRing[4096] __attribute__((aligned(4096)));
 #define MODE_HW      0   // everything on hardware tone generators
 #define MODE_DAC     1   // volume-DAC pulses and triangle, fixed-rate noise
 #define MODE_DAC_N   2   // ...plus tone-clocked noise, which costs the triangle
-#define MODE_COUNT   3
+#define MODE_FM      3   // triangle to FM: nothing is contested any more
+#define MODE_COUNT   4
 
-static const char* const modeName[MODE_COUNT] = {"HW", "DAC", "DAC+NOISE"};
+static const char* const modeName[MODE_COUNT] = {"HW", "DAC", "DAC+NOISE", "FM TRI"};
 static const char* const variantName[PSGDAC_NVARIANT] = {"V3", "V2", "V2D"};
 
-static u8 synthMode = MODE_DAC;
+static u8 synthMode = MODE_FM;
 static u8 dpcmAvailable = 0;
 
 // -----------------------------------------------------------------------------
@@ -138,7 +148,14 @@ static u8  lastNoise    = 0xFF;
 static u8  variantHold  = 0;
 
 // Reported for the debug overlay.
-static u8 voiceIsDac[3] = {0, 0, 0};
+#define TRI_OFF 0
+#define TRI_HW  1
+#define TRI_DAC 2
+#define TRI_FM  3
+static const char* const triName[4] = {"-  ", "HW ", "DAC", "FM "};
+
+static u8 voiceIsDac[2] = {0, 0};
+static u8 triSource = TRI_OFF;
 static u8 noiseStoleCh2 = 0;
 
 static void toneOut(u8 ch, u16 period)
@@ -151,6 +168,11 @@ static void attenOut(u8 ch, u8 att)
     if (lastAtten[ch] != att) { psgAtten(ch, att); lastAtten[ch] = att; }
 }
 
+// Writing the noise control register resets the shift register to its seed, so
+// this guard is correctness, not economy: rewriting the same value every frame
+// would restart the noise pattern 60 times a second and turn the drums into a
+// 60 Hz buzz. Retriggering only on a real change is also what percussion wants
+// -- each hit then starts from the same point in the sequence.
 static void noiseOut(u8 white, u8 rate)
 {
     u8 b = 0xE0 | (white ? 0x04 : 0) | (rate & 3);
@@ -170,15 +192,105 @@ static void ymWrite(u8 part, u8 reg, u8 val)
     *data = val;
 }
 
+// Part I's address port stays latched on 0x2A so the Z80 can feed the DAC with
+// one store per sample.  Anything the 68000 writes through part I breaks that
+// latch, so put it back.  The FM triangle lives on channel 5 -- part II -- for
+// exactly this reason: its per-frame frequency writes never touch part I.
+static void ymRelatchDac(void)
+{
+    if (dpcmAvailable) *(vu8*)0xA04000 = 0x2A;
+}
+
 static void ymDacInit(void)
 {
     ymWrite(0, 0x2B, 0x80);     // channel 6 becomes the DAC
     ymWrite(1, 0xB6, 0xC0);     // both speakers
     ymWrite(0, 0x28, 0x06);     // key off, the DAC does not need an envelope
     ymWrite(0, 0x2A, 0x80);     // sit at mid scale
-    // Latch the DAC register and leave it latched: from here on the Z80 feeds
-    // samples with a single store per sample to the data port.
     *(vu8*)0xA04000 = 0x2A;
+}
+
+// -----------------------------------------------------------------------------
+// The FM triangle.
+//
+// A triangle is odd harmonics at 1/n-squared, and algorithm 7 is four carriers
+// in parallel -- so four operators at MUL 1, 3, 5, 7 with the right total levels
+// *are* a triangle, additively, with no modulation involved.  Against the NES's
+// own 32-step staircase that lands about 4 dB closer than the PSG volume DAC
+// manages; against a clean triangle it is 16 dB closer.  The volume DAC's
+// problem is structural: 2 dB attenuation steps cannot resolve a 16-level linear
+// staircase near full scale, so five pairs of levels collapse and the peaks
+// flatten.  FM's total level is 0.75 dB a step and its pitch is exact to a third
+// of a cent anywhere from 27 Hz up.
+//
+// What this really buys is elsewhere, twice over.  The wave voice leaves the Z80
+// loop, which shortens it from 233 cycles to 144 and lifts the pulse ceiling
+// from 1920 Hz to 3107 Hz.  And PSG channel 2 goes free, so tone-clocked noise
+// stops costing the triangle and every NES noise period is available at once.
+//
+// Caveat worth knowing: FM operators cannot be inverted, and a triangle's
+// harmonics alternate in sign.  The magnitude spectrum matches; the scope trace
+// will not look like a triangle.
+// -----------------------------------------------------------------------------
+#define FM_TRI_PART   1         // channels 4-6 live on part II
+#define FM_TRI_IDX    1         // ...index 1 of that part is channel 5
+#define FM_TRI_KEY    0x05      // channel code for register 0x28
+#define FM_TRI_LEVEL  8         // added to every TL: headroom, and overall balance
+
+// fnum at block 0 for a NES triangle period t is FM_TRI_K / (t + 1).
+#define FM_TRI_K      2202010UL
+
+static const u8 fmTriMul[4] = {1, 3, 5, 7};
+static const u8 fmTriTL[4]  = {0, 26, 38, 47};   // 0.75 dB steps, fitted to the NES staircase
+
+static u16 fmTriPeriod = 0xFFFF;
+static u8  fmTriKeyed  = 0;
+
+static void ymTriangleInit(void)
+{
+    u8 op;
+    for (op = 0; op < 4; op++)
+    {
+        u8 r = (op * 4) + FM_TRI_IDX;
+        ymWrite(FM_TRI_PART, 0x30 + r, fmTriMul[op]);                  // DT 0, MUL
+        ymWrite(FM_TRI_PART, 0x40 + r, fmTriTL[op] + FM_TRI_LEVEL);    // total level
+        ymWrite(FM_TRI_PART, 0x50 + r, 0x1F);                          // instant attack
+        ymWrite(FM_TRI_PART, 0x60 + r, 0x00);                          // no decay
+        ymWrite(FM_TRI_PART, 0x70 + r, 0x00);                          // no second decay
+        ymWrite(FM_TRI_PART, 0x80 + r, 0x0F);                          // full sustain, fast release
+        ymWrite(FM_TRI_PART, 0x90 + r, 0x00);                          // SSG-EG off
+    }
+    ymWrite(FM_TRI_PART, 0xB0 + FM_TRI_IDX, 0x07);   // no feedback, algorithm 7
+    ymWrite(FM_TRI_PART, 0xB4 + FM_TRI_IDX, 0xC0);   // both speakers
+    ymWrite(0, 0x28, FM_TRI_KEY);                    // key off
+    ymRelatchDac();
+    fmTriPeriod = 0xFFFF;
+    fmTriKeyed = 0;
+}
+
+static void ymTriangleFreq(u16 nesPeriod)
+{
+    u32 fnum;
+    u8 block = 0;
+
+    if (nesPeriod == fmTriPeriod) return;
+    fmTriPeriod = nesPeriod;
+
+    fnum = FM_TRI_K / ((u32)nesPeriod + 1);
+    while (fnum > 2047 && block < 7) { fnum >>= 1; block++; }
+    if (fnum > 2047) fnum = 2047;
+
+    // High byte first: the chip latches it and commits both on the low write.
+    ymWrite(FM_TRI_PART, 0xA4 + FM_TRI_IDX, ((block & 7) << 3) | ((fnum >> 8) & 7));
+    ymWrite(FM_TRI_PART, 0xA0 + FM_TRI_IDX, fnum & 0xFF);
+}
+
+static void ymTriangleKey(u8 on)
+{
+    if (on == fmTriKeyed) return;
+    fmTriKeyed = on;
+    ymWrite(0, 0x28, on ? (0xF0 | FM_TRI_KEY) : FM_TRI_KEY);
+    ymRelatchDac();
 }
 
 // -----------------------------------------------------------------------------
@@ -269,7 +381,7 @@ static u16 pulseHz(u16 period) { return (u16)(111861UL / (period + 1)); }
 
 static void synthUpdate(void)
 {
-    u8 variant, wantWave, headroom, i;
+    u8 variant, wantWave, headroom, fmTriangle, i;
     u8 stealCh2 = 0;
     u16 ceiling;
     u32 kPulse, kTri;
@@ -281,16 +393,34 @@ static void synthUpdate(void)
     // Tone-clocked noise buys 15 of 16 NES periods instead of 3, and costs
     // channel 2 -- which is the triangle.  Only spend that when the nearest
     // fixed rate is genuinely wrong.
-    if (synthMode == MODE_DAC_N && noiseOn && noiseVol && chanEnable[3] &&
-        noiseNeedsCh2[noisePeriodIdx])
-        stealCh2 = 1;
+    // Special noise mode: rate selector 3 clocks the shift register from tone
+    // channel 2 instead of one of the three fixed dividers.
+    //
+    // In MODE_FM there is nothing to steal -- the triangle has left the PSG --
+    // so use channel 2 for *every* period, not just the ones a fixed rate
+    // misses. Two reasons beyond accuracy:
+    //   - even the "close enough" fixed rates are up to 20% out (period 7);
+    //     channel 2 is exact to about 1% everywhere.
+    //   - writing the noise control register resets the shift register. A song
+    //     alternating between a fixed rate and channel 2 rewrites that register
+    //     on every switch, restarting the noise pattern each time. Staying on
+    //     rate 3 keeps the control byte constant, so the LFSR runs undisturbed
+    //     and only real note changes retrigger it.
+    if (noiseOn && noiseVol && chanEnable[3])
+    {
+        if (synthMode == MODE_FM)           stealCh2 = 1;
+        else if (synthMode == MODE_DAC_N &&
+                 noiseNeedsCh2[noisePeriodIdx]) stealCh2 = 1;
+    }
 
     // ---- pick a loop variant ------------------------------------------------
     // Sample rate is loop length, so this choice is a pitch ceiling.  A pulse
     // that needs duty above V3's ceiling is worth more than a DAC triangle,
     // because the hardware tone generator can still carry the triangle -- badly
     // above 109 Hz, not at all below it.
-    wantWave = triOn && chanEnable[2] && !stealCh2 && (synthMode != MODE_HW);
+    fmTriangle = (synthMode == MODE_FM) && triOn && chanEnable[2] && triPeriod;
+    wantWave = triOn && chanEnable[2] && !stealCh2 && !fmTriangle &&
+               (synthMode != MODE_HW);
     headroom = (p1On && p1Duty != 2 && hz1 > psgdacCeiling[PSGDAC_V3] && hz1 <= psgdacCeiling[PSGDAC_V2]) ||
                (p2On && p2Duty != 2 && hz2 > psgdacCeiling[PSGDAC_V3] && hz2 <= psgdacCeiling[PSGDAC_V2]);
 
@@ -353,27 +483,39 @@ static void synthUpdate(void)
         voiceIsDac[i] = useDac;
     }
 
-    // ---- triangle, or whatever is left of channel 2 --------------------------
-    if (stealCh2)
+    // ---- triangle: FM, the volume DAC, or the tone generator ----------------
+    if (!fmTriangle) ymTriangleKey(0);
+
+    if (fmTriangle)
+    {
+        // Off the PSG entirely. No pitch ceiling, no 109 Hz floor, no Z80 cycles,
+        // and channel 2 is left for the noise generator to clock itself from.
+        PSGDAC_setWave(0, 0);
+        ymTriangleFreq(triPeriod);
+        ymTriangleKey(1);
+        if (!stealCh2) attenOut(2, 15);
+        triSource = TRI_FM;
+    }
+    else if (stealCh2)
     {
         // Channel 2 is a clock now, not a voice.  Silence its output and hand
         // its period to the noise generator below.
         PSGDAC_setWave(0, 0);
         attenOut(2, 15);
-        voiceIsDac[2] = 0;
+        triSource = TRI_OFF;
     }
     else if (!triOn || !triPeriod || !chanEnable[2])
     {
         PSGDAC_setWave(0, 0);
         attenOut(2, 15);
-        voiceIsDac[2] = 0;
+        triSource = TRI_OFF;
     }
     else if (variant == PSGDAC_V3)
     {
         PSGDAC_setWave((u16)(kTri / (triPeriod + 1)), 1);
         toneOut(2, 0);
         lastAtten[2] = 0xFF;                // wave table drives the attenuator
-        voiceIsDac[2] = 1;
+        triSource = TRI_DAC;
     }
     else
     {
@@ -386,7 +528,7 @@ static void synthUpdate(void)
         PSGDAC_setWave(0, 0);
         toneOut(2, (u16)p);
         attenOut(2, nesVolToAtten[12]);     // NES triangle has no volume control
-        voiceIsDac[2] = 0;
+        triSource = TRI_HW;
     }
 
     // ---- noise --------------------------------------------------------------
@@ -395,10 +537,21 @@ static void synthUpdate(void)
         u8 white = (noiseMode == 0);        // NES mode 0 is the long sequence
         if (stealCh2)
         {
+            // Period table depends on the mode. White matches the shift rate.
+            // Periodic matches perceived pitch instead: the NES short sequence
+            // is 93 steps to the PSG's 15, so matching the clock would put it
+            // six octaves out. Period 0 is not usable as a clock, so the table
+            // floors at 1 -- which is why NES period 0 lands an octave low
+            // rather than exact. It is the closest the chip can get; the
+            // nearest fixed rate is 32 times slower.
             u16 p = white ? noisePeriodWhite[noisePeriodIdx]
                           : noisePeriodPeriodic[noisePeriodIdx];
             toneOut(2, p);
-            noiseOut(white, 3);             // rate 3 = clocked by channel 2
+            // Channel 2 still drives its own output while it clocks the noise,
+            // and at the low end of the table that tone is audible (period 508
+            // sits at 220 Hz). It has to be attenuated to silence explicitly.
+            attenOut(2, 15);
+            noiseOut(white, 3);
         }
         else
         {
@@ -419,6 +572,7 @@ static void handleInput(u16 changed)
     if (changed & BUTTON_START)
     {
         synthMode = (synthMode + 1) % MODE_COUNT;
+        fmTriPeriod = 0xFFFF;               // force the FM voice to re-tune
         // Anything could be parked in DC mode; force a full re-program.
         lastTone[0] = lastTone[1] = lastTone[2] = 0xFFFF;
         lastAtten[0] = lastAtten[1] = lastAtten[2] = lastAtten[3] = 0xFF;
@@ -469,8 +623,7 @@ static void drawUi(void)
             !p2On ? "-  " : (voiceIsDac[1] ? "DAC" : "HW "));
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
 
-    sprintf(t, "TR %4d Hz     %s", pulseHz(triPeriod) / 2,
-            !triOn ? "-  " : (voiceIsDac[2] ? "DAC" : (noiseStoleCh2 ? "OFF" : "HW ")));
+    sprintf(t, "TR %4d Hz     %s", pulseHz(triPeriod) / 2, triName[triSource]);
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
 
     sprintf(t, "NZ p%2d %s v%2d %s", noisePeriodIdx,
@@ -504,12 +657,10 @@ int main(void)
     dpcmAvailable = ((u32)dpcmRing >= 0xFF1000) &&
                     (((u32)dpcmRing + 4096) <= 0xFF8000) &&
                     ((((u32)dpcmRing) & 0xFFF) == 0);
-    if (dpcmAvailable)
-    {
-        Z80_requestBus(TRUE);
-        ymDacInit();
-        Z80_releaseBus();
-    }
+    Z80_requestBus(TRUE);
+    if (dpcmAvailable) ymDacInit();
+    ymTriangleInit();
+    Z80_releaseBus();
 
     // Tell the Lua side where to put PCM, so it can write 68000 RAM directly and
     // the samples never have to cross the Z80 bus.
@@ -528,12 +679,16 @@ int main(void)
 
         handleInput(changed);
         readApuBlock();
-        synthUpdate();
 
-        // One short window with the Z80 stopped: PSG registers first, then the
-        // loop's immediate operands.  Only changed bytes are written, so this is
-        // typically a handful of stores rather than a hole in the audio.
+        // One window with the Z80 stopped, covering every chip write we make.
+        // A PSG tone period is a latch byte followed by a data byte; if one of
+        // the Z80's volume writes lands between the two, the data byte is
+        // applied to the Z80's channel and the period is silently wrong. In
+        // special noise mode channel 2's period is the noise clock, so that
+        // corruption would be audible as a wandering drum pitch.
+        // Only bytes that changed are written, so the window stays short.
         Z80_requestBus(TRUE);
+        synthUpdate();
         PSGDAC_flush();
         Z80_releaseBus();
 

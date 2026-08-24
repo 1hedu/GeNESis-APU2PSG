@@ -18,7 +18,7 @@ local READ_INTERVAL = 0.008            -- seconds between file polls
 
 -- ---------------------------------------------------------------- tables ----
 local VOL_TO_ATTEN = {[0]=15, 12, 9, 7, 6, 5, 4, 3, 3, 2, 2, 1, 1, 1, 0, 0}
-local NOISE_FIXED  = {[0]=0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 2, 2}
+local NOISE_FIXED  = {[0]=0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2}
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end

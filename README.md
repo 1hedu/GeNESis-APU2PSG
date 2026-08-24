@@ -82,15 +82,17 @@ Measured against the capture checked into this repo (8697 frames):
 - **85% of pulse-1 frames use a duty the PSG hardware cannot make** (61.5% at 12.5%, 23.4% at 75%). This is the technique earning its keep.
 - **97% of pulse frames sit at or below V3's ceiling**, 100% below V2's. So the crossover fires on about 3% of frames — audible on the high lead runs, which is exactly where it was reported to struggle.
 
-### 3. Tone-clocked noise
-The PSG's noise generator has three fixed rates. The NES has sixteen periods in two modes, so 32 sounds. Setting the PSG's noise rate to 3 clocks the shift register from **tone channel 2** instead, and channel 2's period is 10 bits — so the NES's rate table becomes reachable to within about 1%:
+### 3. Tone-clocked noise ("special" noise mode)
+The PSG's noise generator has three fixed rates. The NES has sixteen periods in two modes, so 32 sounds. Setting the PSG's noise rate selector to 3 clocks the shift register from **tone channel 2** instead, and channel 2's period is 10 bits — so most of the NES's rate table becomes reachable:
 
 | NES period index | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| ch2 period (white) | – | 1 | 2 | 4 | 8 | 12 | 16 | 20 | 25 | 32 | 47 | 63 | 95 | 127 | 254 | 508 |
-| period error | – | 0% | 0% | 0% | 0% | 0% | 0% | 0% | −1.0% | +0.8% | −1.1% | −0.8% | −0.3% | 0% | −0.1% | −0.1% |
+| ch2 period (white) | – | – | 1 | 2 | 4 | 6 | 8 | 10 | 13 | 16 | 24 | 32 | 48 | 63 | 127 | 254 |
+| period error | – | – | 0% | 0% | 0% | 0% | 0% | 0% | +3.0% | +0.8% | +1.1% | +0.8% | +0.8% | −0.8% | −0.1% | −0.1% |
 
-Fifteen of sixteen, exactly. Only index 0 is out of reach — it wants a 447 kHz shift rate, and the PSG tops out at half that.
+Fourteen of sixteen. Indices 0 and 1 want a shift-register period below 1 and are out of the chip's reach in white mode — though short mode's ×6.2 pitch factor lifts them back into range.
+
+**The divisor matters more than anything else here.** The shift register advances once per tone-3 *output cycle*, so its rate is clock/(32·P) — the same as the tone frequency, not twice it. Two documented facts pin it down and agree: the three fixed rates are clock/512, /1024 and /2048, *and* they are equivalent to tone periods 0x10, 0x20, 0x40. Only clock/(32·P) satisfies both. Read it the other way and every drum lands an octave out. That reading also places the fixed rates on NES indices **9, 11 and 13**, each to within 0.8% — presumably why the chip has exactly those three.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/noise-coverage-dark.png">
@@ -101,9 +103,33 @@ Fifteen of sixteen, exactly. Only index 0 is out of reach — it wants a 447 kHz
 
 Short (periodic) mode needs a different mapping. The NES's short sequence is 93 steps to the PSG's 15, so matching the shift *rate* would put the pitch six octaves out; the table matches perceived pitch instead. Indices 14 and 15 clamp, at 9.5 Hz and 4.7 Hz, which is below hearing anyway.
 
-**The price is channel 2, which is where the triangle lives.** That is the trade the old TODO asked about, and it is not close: in the checked-in capture, **99.2% of noise-active frames use a period the three fixed rates cannot reach**. Drums are almost never on one of the three. So this is a genuine choice, not a free win, and it is on a button (START) so you can hear both.
+**The price used to be channel 2, which is where the triangle lives** — that was the trade the old TODO asked about. In the checked-in capture, **64.3% of noise-active frames use a period the three fixed rates cannot reach**; index 13 is the one heavily-used period they do cover. With the triangle moved to FM there is nothing left to pay, so this mode is simply on.
 
-### 4. YM2612 channel 6 DAC — for DPCM
+Three further nuances, all of which will bite:
+
+- **Channel 2 keeps making sound while it clocks the noise.** Its own square is still routed to the mixer, and at the slow end of the table it is squarely audible — period 254 sits at 440 Hz. It has to be attenuated to 15 explicitly.
+- **Writing the noise control register resets the shift register.** Rewriting the same value every frame restarts the noise pattern 60 times a second, which is a 60 Hz buzz rather than a drum. The register is only written on an actual change — which is also what percussion wants, since each hit then starts from the same point in the sequence. Changing channel 2's *period* does not reset it, so noise sweeps stay smooth.
+- **Alternating between a fixed rate and rate 3 retriggers on every switch.** So in FM mode every period goes through channel 2, including the ones a fixed rate would cover: the control byte then never changes, and the LFSR runs undisturbed.
+
+### 4. FM triangle *(and what it unlocks)*
+A triangle is odd harmonics falling at 1/n², and YM2612 algorithm 7 is four carriers in parallel — so four operators at MUL 1, 3, 5, 7 with the right total levels **are** a triangle, additively, with no modulation involved:
+
+```
+MUL=1 TL=0    MUL=3 TL=26    MUL=5 TL=38    MUL=7 TL=47      (plus a common offset for headroom)
+```
+
+Measured as spectral error against the NES's own 32-step staircase: volume DAC −20.1 dB, FM −24.2 dB. Against a clean triangle the gap widens to −19.0 vs −34.8 dB. The volume DAC's problem is structural — 2 dB attenuation steps cannot resolve a 16-level linear staircase near full scale, so five pairs of levels collapse onto one attenuation and the peaks flatten; worst level error is 7.2% of full scale. FM's total level is 0.75 dB a step, and its pitch is exact to within a third of a cent from 27 Hz up.
+
+*(Caveat: FM operators cannot be inverted and a triangle's harmonics alternate in sign. The magnitude spectrum matches; the scope trace will not look like a triangle.)*
+
+The real value is second-order, and it lands twice:
+
+- **The wave voice leaves the Z80 loop**, shortening it from 233 to 144 cycles. The pulse ceiling goes from 1920 Hz to 3107 Hz — 97% → **100%** of pulse frames in the capture keep their true duty.
+- **PSG channel 2 goes free**, so tone-clocked noise stops costing anything and every reachable NES noise period is available at once.
+
+That is why the default mode is FM TRI. The PSG-only path is still one button away.
+
+### 5. YM2612 channel 6 DAC — for DPCM
 DPCM does not belong on the volume DAC. It would consume the entire Z80 loop, take a PSG channel, and still only get four logarithmic bits. The YM2612's channel-6 DAC is 8-bit linear and, once register 2Ah is latched, costs one store per sample. That is its home.
 
 The samples stream out of 68000 RAM through the Z80's bank window, *not* over the Z80 bus — because every byte the 68000 hands to the Z80 requires stopping the Z80, and stopping the Z80 stops the audio. That is also why parameter updates are diffed: only bytes that actually changed get written, so the per-frame stall is a handful of stores instead of a hole in the sound.
@@ -111,14 +137,14 @@ The samples stream out of 68000 RAM through the Z80's bank window, *not* over th
 Status: the driver path, the ring protocol and the recorder-side `$4011` capture are all in. It is the least exercised part of this and is off by default — set `RECORD_DPCM = true` in the recorder.
 
 ### What this means for the FM ideas in the old TODO
-Two of them are now unnecessary rather than unfinished. The volume DAC produces the duties directly, so there is nothing left for "50% square + FM to color it into 12.5%" to fix, and nothing left for a DC-offset trick on an FM operator to reach. FM's remaining job is the one the PSG genuinely cannot do: the DAC channel for DPCM, and extra polyphony above the volume DAC's pitch ceiling if you ever want the high leads to keep their duty.
+Two of them are now unnecessary rather than unfinished. The volume DAC produces the duties directly, so there is nothing left for "50% square + FM to color it into 12.5%" to fix, and nothing left for a DC-offset trick on an FM operator to reach. FM's remaining jobs are the ones the PSG genuinely cannot do: the triangle, the DAC channel for DPCM, and extra polyphony above the volume DAC's pitch ceiling if you ever want the high leads to keep their duty. FM is measurably *worse* than the volume DAC at pulses at every pitch tested — best 2-operator FM manages −7.1 dB against a 12.5% target where the DAC gets −18.5 dB at 220 Hz — so it is only worth a pulse slot above the ceiling, where today's fallback is a plain 50% square at −2.2 dB.
 
 
 # Controls
 
 | button | what it does |
 |---|---|
-| START | cycle synthesis mode: **HW** (everything on hardware tone generators) → **DAC** (volume-DAC pulses and triangle) → **DAC+NOISE** (also tone-clocked noise, which costs the triangle) |
+| START | cycle synthesis mode: **HW** (everything on hardware tone generators) → **DAC** (volume-DAC pulses and triangle) → **DAC+NOISE** (also tone-clocked noise, which costs the triangle) → **FM TRI** (triangle to FM, so nothing is contested — the default) |
 | X / Y / Z | mute pulse 1 / pulse 2 / triangle |
 | A | mute noise (starts muted) |
 | MODE | manual noise audition: step all 16 periods by hand |
@@ -174,7 +200,7 @@ Two conversion bugs went with it. NES volume is linear 0..15 and PSG attenuation
 
 # TODO:
 1. <s>Fix Triangle. Not playing correct note lengths.</s>
-2. <s>Complete mapping of 32 Noise sounds possible on NES.</s> Done — 15 of 16 periods in both modes, via tone-clocked noise. <s>Evaluate sacrificing square3 for full frequency range.</s> Evaluated: it costs the triangle, and 99.2% of noise frames in the test capture need it. On START, so you can judge by ear.
+2. <s>Complete mapping of 32 Noise sounds possible on NES.</s> Done — 14 of 16 periods, via tone-clocked noise; short mode reaches 15. <s>Evaluate sacrificing square3 for full frequency range.</s> Evaluated, then made moot: it used to cost the triangle, but with the triangle on FM channel 2 is free and it costs nothing.
 
 3. Test timbre tricks and Genesis/MegaDrive FM synth integration.
       
@@ -183,6 +209,7 @@ Two conversion bugs went with it. NES volume is linear 0..15 and PSG attenuation
       - <s>DC Offset trick + Volume Modulation (VM) to produce pulse waves of various duty, and triangle, on PSG.</s> Done. This is the main solution.
       - 2 detuned PSG square waves can give us a pulse wave similar to what NES produces. <s>Can we get 3 to sound like 2?</s> No. Still worth trying as the *high-pitch* fallback, where the volume DAC runs out of sample rate and currently degrades to 50% — two phase-offset hardware squares keep some duty character at any pitch, at the cost of a second channel.
       - FM synth DAC mode channel to play NES DPCM channel. Driver path and ring protocol are in; needs real testing.
+      - <s>Something better than the PSG for the Triangle.</s> Done — four FM operators in parallel, algorithm 7. Better than the volume DAC by 4 dB against the NES staircase, and it hands back both a Z80 voice and PSG channel 2.
       - <s>DC Offset trick on 1 FM synth channel using separated operators (Special FM Mode).</s> Not needed now — the PSG makes the duties directly.
       - <s>FM synth layered over 50% square, to color the waveform appropriately per whichever duty the NES is playing.</s> Superseded below the pitch ceiling. Still the best idea *above* it.
 
