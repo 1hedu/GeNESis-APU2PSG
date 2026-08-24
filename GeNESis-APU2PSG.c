@@ -212,6 +212,14 @@ static u8 dpcmAvailable = 0;
 static u8  dataSource = SRC_CART;
 static u16 cartFrame  = 0;
 
+// The capture is 60 frames a second of NES time. On a PAL machine vblank comes
+// 50 times a second, so advancing one capture frame per vblank plays 17% slow.
+// Advance in 8.8 fixed point instead: 1.0 per vblank on NTSC, 1.2 on PAL, and
+// drop frames when the accumulator carries. Set at boot from SYS_isPAL().
+static u16 cartStep = 256;
+static u16 cartAcc  = 0;
+static u16 uiTick   = 0;
+
 // -----------------------------------------------------------------------------
 // Manual test-tone controls, kept from the original build.
 // -----------------------------------------------------------------------------
@@ -453,6 +461,7 @@ static void readApuBlock(void)
 static void readCartFrame(void)
 {
     const u8 *p = apuData + (u32)cartFrame * APU_DATA_STRIDE;
+
     u16 w;
 
     w = (p[0] << 8) | p[1];
@@ -479,8 +488,13 @@ static void readCartFrame(void)
     haveExt  = 1;                      // fields are NES-native, like v2
     nesFrame = cartFrame & 0xFF;
 
-    cartFrame++;
-    if (cartFrame >= APU_DATA_FRAMES) cartFrame = 0;
+    cartAcc += cartStep;
+    while (cartAcc >= 256)
+    {
+        cartAcc -= 256;
+        cartFrame++;
+        if (cartFrame >= APU_DATA_FRAMES) cartFrame = 0;
+    }
 }
 
 static void clearApuBlock(void)
@@ -729,11 +743,11 @@ static void drawUi(void)
     u8 y = 10;
 
     if (dataSource == SRC_CART)
-        sprintf(t, "MODE %-9s  CART %4d/%d", modeName[synthMode],
-                cartFrame, APU_DATA_FRAMES);
+        sprintf(t, "MODE %-9s CART %4d/%d %ldfps", modeName[synthMode],
+                cartFrame, APU_DATA_FRAMES, (long)SYS_getFPS());
     else
-        sprintf(t, "MODE %-9s  SCRIPT v%d  %5d Hz", modeName[synthMode],
-                haveExt ? 2 : 1, psgdacRate[psgdacVariant]);
+        sprintf(t, "MODE %-9s SCRIPT v%d %ldfps", modeName[synthMode],
+                haveExt ? 2 : 1, (long)SYS_getFPS());
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
 
     sprintf(t, "LOOP %-3s (%d cyc)  DPCM %s%s", variantName[psgdacVariant],
@@ -798,6 +812,8 @@ int main(bool hardReset)
     apuBlock.self  = (u32)&apuBlock;
     apuBlock.magic = APU_BLOCK_MAGIC;
 
+    cartStep = SYS_isPAL() ? 307 : 256;     // 1.2 or 1.0 capture frames a vblank
+
     JOY_setEventHandler(joyEvent);
 
     while (TRUE)
@@ -824,7 +840,12 @@ int main(bool hardReset)
 
         clearApuBlock();
 
-        drawUi();
+        // The overlay is 9 lines of sprintf and VRAM writes -- far too heavy to
+        // redraw every frame. Overrunning the frame budget makes the loop miss
+        // vblanks, which is audible as slowed-down playback, so the music must
+        // never wait for the UI.
+        uiTick++;
+        if ((uiTick & 7) == 0) drawUi();
         VDP_waitVSync();
     }
 
