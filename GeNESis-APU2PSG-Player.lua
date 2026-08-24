@@ -37,15 +37,19 @@ local function scriptDir()
 end
 
 local FILENAME, file
+local why = {}
 for _, path in ipairs({ (scriptDir() or "") .. BASENAME, BASENAME }) do
-    file = io.open(path, "r")
-    if file then FILENAME = path; break end
+    local f, err = io.open(path, "r")
+    if f then file, FILENAME = f, path; break end
+    why[#why + 1] = "  " .. path .. "\n      " .. tostring(err)
 end
 if not file then
-    print("Error: " .. BASENAME .. " not found!")
-    print("  Looked next to this script: " .. ((scriptDir() or "?") .. BASENAME))
-    print("  and in the emulator's working directory.")
-    print("  Run the FCEUX recorder first, or put the file in either place.")
+    -- Report what the OS said, not what we assumed. io.open's second return
+    -- distinguishes a missing file from a locked one, a bad name from a
+    -- protected folder -- all of which used to print "not found".
+    print("Error: could not open " .. BASENAME)
+    for _, line in ipairs(why) do print(line) end
+    print("  Load tools/diagnose.lua for a fuller report.")
     return
 end
 

@@ -61,16 +61,29 @@ local function triPeriodToPsg(t)   return clamp((t + 1) * 2, 1, 1023) end
 -- ---------------------------------------------------------------- file ------
 local file, lastPos, buffer = nil, 0, {}
 
+local reported = false
+
 local function openFile()
+    local why = {}
     for _, path in ipairs(CANDIDATES) do
-        file = io.open(path, "r")
+        local f, err = io.open(path, "r")
+        file = f
+        if not f then why[#why + 1] = "  " .. path .. "\n      " .. tostring(err) end
         if file then
             FILENAME = path
             file:seek("end")      -- live sync: only care about what happens next
             lastPos = file:seek()
             print("NES APU data file found, tailing " .. path)
+            reported = false
             return
         end
+    end
+    -- Live sync legitimately starts before the recorder has made the file, so
+    -- say why once rather than every frame.
+    if not reported then
+        reported = true
+        print("Waiting for " .. BASENAME .. ":")
+        for _, line in ipairs(why) do print(line) end
     end
 end
 

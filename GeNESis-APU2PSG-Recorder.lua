@@ -37,10 +37,20 @@ local RECORD_DPCM = false                -- see the DPCM note at the bottom
 local DPCM_RATE   = 20455
 local DPCM_PER_FRAME = math.floor(DPCM_RATE / 60)
 
-local outputFile = io.open(FILENAME, "w")
+local outputFile, openErr = io.open(FILENAME, "w")
 if not outputFile then
-    print("Error: Failed to open " .. FILENAME .. " for writing")
-    return
+    -- Fall back to the emulator's working directory if the script's own folder
+    -- is not writable (a repo on a read-only share, Program Files, and so on).
+    print("Could not write " .. FILENAME .. ": " .. tostring(openErr))
+    outputFile, openErr = io.open(BASENAME, "w")
+    if outputFile then
+        FILENAME = BASENAME
+        print("Falling back to the emulator's working directory instead.")
+    else
+        print("Error: could not write " .. BASENAME .. " either: " .. tostring(openErr))
+        print("Load tools/diagnose.lua for a fuller report.")
+        return
+    end
 end
 
 outputFile:write("#GAPU2 v2\n")
