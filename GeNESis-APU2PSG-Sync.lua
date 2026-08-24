@@ -56,11 +56,10 @@ local function rd32(a)
 end
 
 local function findBlock()
-    for a = base + OFF_LEGACY + 0, 0xFFFFFC, 4 do
+    for a = 0xFF0000, 0xFFFFFC, 2 do   -- the struct is 2-aligned on m68k, so step 2
         if memory.readbyte(a) == MAGIC[1] and memory.readbyte(a + 1) == MAGIC[2]
        and memory.readbyte(a + 2) == MAGIC[3] and memory.readbyte(a + 3) == MAGIC[4] then
-            local self_ = rd32(a + 4) % 0x1000000 + base + OFF_LEGACY + 0
-            -- the ROM stores the raw pointer; compare only the RAM-relevant bits
+            -- the ROM stores its raw pointer; compare the RAM-relevant bits
             if (rd32(a + 4) % 0x10000) == (a % 0x10000) then return a end
         end
     end
