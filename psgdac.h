@@ -143,10 +143,11 @@ static inline u8 psgdacSpanByte(u8 atten) { return (u8)((atten - 0x0F) & 0xFF); 
 
 // ---- lifecycle -------------------------------------------------------------
 
-// Upload the driver, leaving the Z80 in reset. Chip initialisation happens
-// between this and PSGDAC_start(): with the Z80 held, the 68000 is the only
-// master, so it can write the YM2612 directly and busy-wait on it safely --
-// the one window in which that is true.
+// Upload the driver, leaving the Z80 in reset. Do NOT initialise the sound
+// chips before PSGDAC_start(): on the Mega Drive the Z80 reset line also resets
+// the YM2612, so FM registers written now are wiped when reset deasserts. Init
+// them after start, inside a bus-request window -- a bus request stalls the Z80
+// without resetting anything.
 static void PSGDAC_init(u32 dpcmRingBase)
 {
     u16 i;

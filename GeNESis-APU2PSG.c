@@ -656,8 +656,9 @@ static void drawUi(void)
             haveExt ? 2 : 1, psgdacRate[psgdacVariant]);
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
 
-    sprintf(t, "LOOP %-3s (%d cyc)  DPCM %s", variantName[psgdacVariant],
-            psgdacCycles[psgdacVariant], dpcmAvailable ? (dpcmOn ? "ON " : "rdy") : "n/a");
+    sprintf(t, "LOOP %-3s (%d cyc)  DPCM %s%s", variantName[psgdacVariant],
+            psgdacCycles[psgdacVariant], dpcmAvailable ? (dpcmOn ? "ON " : "rdy") : "n/a",
+            cmdDropped ? "  Q-OVF!" : "");
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y += 2;
 
     sprintf(t, "P1 %4d Hz d%d v%2d %s", pulseHz(p1Period), p1Duty, p1Vol,
@@ -696,19 +697,21 @@ int main(void)
                     (((u32)dpcmRing + 4096) <= 0xFF8000) &&
                     ((((u32)dpcmRing) & 0xFFF) == 0);
 
-    // Upload the driver but leave the Z80 in reset. Everything between here and
-    // PSGDAC_start() is the one window where the 68000 may touch a sound chip
-    // directly, because nothing else is driving the bus.
-    PSGDAC_init((u32)dpcmRing);
+    PSGDAC_init((u32)dpcmRing);     // upload; the Z80 is left in reset
+    buildTriangleWave();
+    PSGDAC_start();                 // Z80 out of reset, loop running on dummies
 
+    // Chip init AFTER the Z80 leaves reset, because the Z80 reset line also
+    // resets the YM2612 -- registers written while reset is asserted are wiped
+    // the moment it deasserts. A bus request is different: it stalls the Z80
+    // without resetting anything, so inside this window the 68000 is the only
+    // master and may write chips directly and busy-wait on the YM. The loop is
+    // still aimed at dummy targets here, so no writes of ours can be split.
     Z80_requestBus(TRUE);
     for (i = 0; i < 4; i++) psgDirect(0x9F | (i << 5));   // silence all four channels
     if (dpcmAvailable) ymDacInit();
     ymTriangleInit();
     Z80_releaseBus();
-
-    buildTriangleWave();
-    PSGDAC_start();
 
     // Tell the Lua side where to put PCM, so it can write 68000 RAM directly and
     // the samples never have to cross the Z80 bus.
@@ -727,16 +730,13 @@ int main(void)
 
         handleInput(changed);
         readApuBlock();
+        synthUpdate();      // fills a local command buffer; no bus, no chips
 
-        // One window with the Z80 stopped, covering every chip write we make.
-        // A PSG tone period is a latch byte followed by a data byte; if one of
-        // the Z80's volume writes lands between the two, the data byte is
-        // applied to the Z80's channel and the period is silently wrong. In
-        // special noise mode channel 2's period is the noise clock, so that
-        // corruption would be audible as a wandering drum pitch.
-        // Only bytes that changed are written, so the window stays short.
+        // The only per-frame bus window: patch changed loop operands and copy
+        // the frame's queued chip writes into the Z80's queue page. Plain byte
+        // stores, no waits -- the stall is a few microseconds, and the Z80
+        // itself replays the commands one per sample once it resumes.
         Z80_requestBus(TRUE);
-        synthUpdate();
         PSGDAC_flush();
         Z80_releaseBus();
 
