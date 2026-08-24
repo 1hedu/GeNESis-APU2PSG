@@ -46,7 +46,7 @@
 #define Z80_YM_DATA1    0x4001
 #define Z80_YM_ADDR2    0x4002          // YM2612 part II (channels 4-6)
 #define Z80_YM_DATA2    0x4003
-#define Z80_RAM(a)      ((vu8*)(0xA00000 + (a)))
+#define Z80_MEM(a)      ((vu8*)(0xA00000 + (a)))   // SGDK owns the name Z80_RAM
 
 // Loop lengths, straight out of the assembler: the variant body plus the one
 // jump through the service slot that every sample pays.
@@ -131,10 +131,10 @@ static inline void PSGDAC_ym(u8 part, u8 reg, u8 val)
 
 static inline void PSGDAC_psg(u8 byte) { PSGDAC_cmd(Z80_PSG_PORT, byte); }
 
-static inline void z80w8(u16 addr, u8 v)   { *Z80_RAM(addr) = v; }
-static inline void z80w16(u16 addr, u16 v) { *Z80_RAM(addr) = v & 0xFF;
-                                             *Z80_RAM(addr + 1) = v >> 8; }
-static inline u8   z80r8(u16 addr)         { return *Z80_RAM(addr); }
+static inline void z80w8(u16 addr, u8 v)   { *Z80_MEM(addr) = v; }
+static inline void z80w16(u16 addr, u16 v) { *Z80_MEM(addr) = v & 0xFF;
+                                             *Z80_MEM(addr + 1) = v >> 8; }
+static inline u8   z80r8(u16 addr)         { return *Z80_MEM(addr); }
 
 // The 'and' operand that makes mute + span come out as 0x90|attenuation.  In the
 // log domain, scaling a waveform is just adding a constant, which is the reason
@@ -152,15 +152,15 @@ static void PSGDAC_init(u32 dpcmRingBase)
 {
     u16 i;
 
-    Z80_loadDriver(Z80_DRIVER_NULL, FALSE);     // stop SGDK's own driver first
+    Z80_unloadDriver();                         // make sure no SGDK driver is resident
 
     Z80_requestBus(TRUE);
     Z80_startReset();
 
     for (i = 0; i < PSGDAC_Z80_SIZE; i++)
-        *Z80_RAM(i) = psgdac_z80[i];
+        *Z80_MEM(i) = psgdac_z80[i];
     for (i = 0; i < 256; i++)                   // silence until a wave is loaded
-        *Z80_RAM(Z80_WAVE + i) = 0xDF;          // ch2 latch, attenuation 15
+        *Z80_MEM(Z80_WAVE + i) = 0xDF;          // ch2 latch, attenuation 15
 
     // Point the PCM reader at the ring the 68000 actually reserved.  The bank
     // window maps 68000 0xFF0000 to Z80 0x8000, so this is pure arithmetic.
@@ -223,7 +223,7 @@ static void PSGDAC_loadWave(const u8 *atten32)
     u16 i;
     Z80_requestBus(TRUE);
     for (i = 0; i < 256; i++)
-        *Z80_RAM(Z80_WAVE + i) = 0xD0 | (atten32[i >> 3] & 0x0F);
+        *Z80_MEM(Z80_WAVE + i) = 0xD0 | (atten32[i >> 3] & 0x0F);
     Z80_releaseBus();
 }
 

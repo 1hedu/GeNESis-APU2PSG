@@ -46,7 +46,7 @@
 // the 68000 really is the only master, so it writes directly and can busy-wait
 // on the YM2612 without stalling anything.
 // -----------------------------------------------------------------------------
-#define PSG_PORT ((vu8*)0xC00011)
+#define PSG_PORT_68K ((vu8*)0xC00011)   // SGDK defines PSG_PORT as a plain address
 
 static inline void psgWrite(u8 b) { PSGDAC_psg(b); }
 
@@ -59,7 +59,7 @@ static void psgTone(u8 ch, u16 period)
 static inline void psgAtten(u8 ch, u8 att) { psgWrite(0x90 | (ch << 5) | (att & 0x0F)); }
 
 // ---- direct access, valid only while the Z80 is in reset -------------------
-static inline void psgDirect(u8 b) { *PSG_PORT = b; }
+static inline void psgDirect(u8 b) { *PSG_PORT_68K = b; }
 
 static void ymDirect(u8 part, u8 reg, u8 val)
 {

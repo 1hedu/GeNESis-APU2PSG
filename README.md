@@ -24,7 +24,13 @@ Requirements:
 - Gens r57Shell Genesis/MegaDrive Emulator
 - Python 3, only if you want to rebuild the Z80 driver (the assembled blob is checked in)
 
-You must use SGDK to build the ROM.
+`rom.bin` is checked in and built from the current source — load that and it
+should just work. To change the code you need SGDK; see **[BUILDING.md](BUILDING.md)**,
+which also records exactly how the checked-in ROM was produced.
+
+**If it sounds like all squares, you are running the old ROM.** The current build
+shows `MODE` and `LOOP` on the top two lines of the overlay and tags each voice
+`DAC` / `HW` / `FM`. `Selected CH1` means the pre-2026 binary.
 
 # To record NES audio:
 Open up FCEUX, load GeNESis-APU2PSG-Recorder lua script. It should run without error. 
