@@ -17,12 +17,35 @@
 -- at all.  v2 carries all of it.
 -- =============================================================================
 
-local FILENAME = "nes_apu_data.txt"   -- must match the FCEUX-side script
-local PLAY_DPCM = true                -- honoured only if the log has PCM in it
+local BASENAME  = "nes_apu_data.txt"   -- must match the FCEUX-side script
+local PLAY_DPCM = true                 -- honoured only if the log has PCM in it
 
-local file = io.open(FILENAME, "r")
+-- Relative paths resolve against the EMULATOR'S working directory (wherever
+-- Gens.exe or FCEUX was launched from), not against this script -- which is why
+-- "file not found" was the first thing so many runs ever printed. Resolve next
+-- to this script instead, so the repo folder works as cloned, checked-in
+-- capture included. The old behaviour (file beside the emulator) still works
+-- as a fallback.
+local function scriptDir()
+    -- Must be a direct call: through pcall, level 1 is pcall's own C frame.
+    if not debug or not debug.getinfo then return nil end
+    local info = debug.getinfo(1, "S")
+    if not info or not info.source then return nil end
+    local src = info.source
+    if string.sub(src, 1, 1) == "@" then src = string.sub(src, 2) end
+    return string.match(src, "^(.*[/\\])")
+end
+
+local FILENAME, file
+for _, path in ipairs({ (scriptDir() or "") .. BASENAME, BASENAME }) do
+    file = io.open(path, "r")
+    if file then FILENAME = path; break end
+end
 if not file then
-    print("Error: " .. FILENAME .. " not found!")
+    print("Error: " .. BASENAME .. " not found!")
+    print("  Looked next to this script: " .. ((scriptDir() or "?") .. BASENAME))
+    print("  and in the emulator's working directory.")
+    print("  Run the FCEUX recorder first, or put the file in either place.")
     return
 end
 

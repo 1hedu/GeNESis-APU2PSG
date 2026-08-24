@@ -219,7 +219,7 @@ Two conversion bugs went with it. NES volume is linear 0..15 and PSG attenuation
 # NOTES:
 
 - <s>Press 'z' on keyboard to toggle noise channel. i cant get it to rest silently.</s> Noise now rests when the stream says it rests; A is a manual mute on top of that.
-- Alter the filepath in the scripts, to point to same dir, OR put nes_apu_data.txt, in same directory as Gens.exe.
+- <s>Alter the filepath in the scripts, to point to same dir, OR put nes_apu_data.txt, in same directory as Gens.exe.</s> The scripts now resolve `nes_apu_data.txt` next to *themselves*, so keeping all three in the repo folder just works — the checked-in capture included. A relative filename resolves against the emulator's working directory, not the script's, which is why "file not found" used to be the first thing a fresh clone printed. The old behaviour (file beside the emulator) still works as a fallback, and the error message now names both places it looked.
 - <s>During playback, the noise channel only, must be enabled by pressing A on the controller.</s> Still true, and still for the same reason: with no Lua feeding it, an enabled noise channel just blares.
 - A live synced version <s>exists,</s> is added.
 - <s>Gens r57shell may be hard to find. I downloaded it, and tried a couple days later from the same location, and the link was broken.  I'm working on a BizHawk version of the Gens lua.</s> Link is back.

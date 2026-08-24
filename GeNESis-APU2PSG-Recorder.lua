@@ -12,7 +12,24 @@
 -- the register got the loud notes right and every envelope tail wrong.
 -- =============================================================================
 
-local FILENAME    = "nes_apu_data.txt"   -- must match the Gens-side script
+-- Relative paths resolve against the EMULATOR'S working directory (wherever
+-- Gens.exe or FCEUX was launched from), not against this script -- which is why
+-- "file not found" was the first thing so many runs ever printed. Resolve next
+-- to this script instead, so the repo folder works as cloned, checked-in
+-- capture included. The old behaviour (file beside the emulator) still works
+-- as a fallback.
+local function scriptDir()
+    -- Must be a direct call: through pcall, level 1 is pcall's own C frame.
+    if not debug or not debug.getinfo then return nil end
+    local info = debug.getinfo(1, "S")
+    if not info or not info.source then return nil end
+    local src = info.source
+    if string.sub(src, 1, 1) == "@" then src = string.sub(src, 2) end
+    return string.match(src, "^(.*[/\\])")
+end
+
+local BASENAME    = "nes_apu_data.txt"   -- must match the Gens-side script
+local FILENAME    = (scriptDir() or "") .. BASENAME
 local RECORD_DPCM = false                -- see the DPCM note at the bottom
 -- Must match the Genesis driver's V2D loop rate: PCM only plays in the variant
 -- that has a PCM voice, and that variant runs at 20455 Hz.  Get this wrong and

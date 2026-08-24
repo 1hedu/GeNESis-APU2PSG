@@ -9,8 +9,28 @@
 -- and turn the NES emulator's own audio down in your OS mixer.
 -- =============================================================================
 
-local FILENAME  = "nes_apu_data.txt"   -- must match the FCEUX-side script
+local BASENAME  = "nes_apu_data.txt"   -- must match the FCEUX-side script
 local PLAY_DPCM = true
+
+-- Relative paths resolve against the EMULATOR'S working directory (wherever
+-- Gens.exe or FCEUX was launched from), not against this script -- which is why
+-- "file not found" was the first thing so many runs ever printed. Resolve next
+-- to this script instead, so the repo folder works as cloned, checked-in
+-- capture included. The old behaviour (file beside the emulator) still works
+-- as a fallback.
+local function scriptDir()
+    -- Must be a direct call: through pcall, level 1 is pcall's own C frame.
+    if not debug or not debug.getinfo then return nil end
+    local info = debug.getinfo(1, "S")
+    if not info or not info.source then return nil end
+    local src = info.source
+    if string.sub(src, 1, 1) == "@" then src = string.sub(src, 2) end
+    return string.match(src, "^(.*[/\\])")
+end
+
+-- Candidates in preference order; openFile() tries each until one appears.
+local CANDIDATES = { (scriptDir() or "") .. BASENAME, BASENAME }
+local FILENAME = CANDIDATES[1]
 
 local BUFFER_TARGET = 4                -- frames of slack we try to hold
 local BUFFER_MAX    = 12               -- past this we are lagging; catch up
@@ -42,11 +62,15 @@ local function triPeriodToPsg(t)   return clamp((t + 1) * 2, 1, 1023) end
 local file, lastPos, buffer = nil, 0, {}
 
 local function openFile()
-    file = io.open(FILENAME, "r")
-    if file then
-        file:seek("end")          -- live sync: only care about what happens next
-        lastPos = file:seek()
-        print("NES APU data file found, tailing from the end.")
+    for _, path in ipairs(CANDIDATES) do
+        file = io.open(path, "r")
+        if file then
+            FILENAME = path
+            file:seek("end")      -- live sync: only care about what happens next
+            lastPos = file:seek()
+            print("NES APU data file found, tailing " .. path)
+            return
+        end
     end
 end
 
