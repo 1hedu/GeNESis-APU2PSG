@@ -20,38 +20,41 @@ which replaced the older `Z80_loadDriver(Z80_DRIVER_NULL, ...)`.
 
 ## How the checked-in rom.bin was built
 
-Without SGDK's own toolchain, using Ubuntu's m68k cross compiler. Recorded here
-because three things had to be worked around, and anyone reproducing it will hit
-the same three:
+Without SGDK's own `m68k-elf` toolchain, using Ubuntu's m68k cross compiler. The
+important part is that **the library is rebuilt with the same compiler as the
+ROM** — mixing SGDK's prebuilt `libmd.a` (crosstool-NG GCC 13.2) with a different
+GCC means mismatched LTO bytecode and two toolchains' ABIs in one binary.
+Rebuilding it makes both halves match by construction, and then SGDK's stock
+makefile works unmodified, LTO and all.
 
 ```sh
-apt-get install gcc-m68k-linux-gnu binutils-m68k-linux-gnu
+apt-get install gcc-m68k-linux-gnu binutils-m68k-linux-gnu \
+                libgmp-dev libmpfr-dev libmpc-dev default-jre
 git clone --depth 1 https://github.com/Stephane-D/SGDK.git
-
-# 1. SGDK's prebuilt libmd.a carries LTO bytecode from a different GCC build,
-#    which this compiler refuses to read. The archive also has full machine code
-#    in it (-ffat-lto-objects), so stripping the bytecode leaves it linkable.
-mkdir delto && cd delto && m68k-linux-gnu-ar x SGDK/lib/libmd.a
-for f in *.o; do
-  SEC=$(m68k-linux-gnu-objdump -h "$f" | awk '{print $2}' \
-        | grep -E '^\.gnu\.(lto_|debuglto_)' | sed 's/^/-R /' | tr '\n' ' ')
-  [ -n "$SEC" ] && m68k-linux-gnu-objcopy $SEC "$f"
-done
-m68k-linux-gnu-ar rcs ../libmd.a *.o && cd ..
-
-# 2. Compile with LTO off for the same reason.
-make -f SGDK/makefile.gen GDK=SGDK PREFIX=m68k-linux-gnu- EXTRA_FLAGS="-fno-lto"
-
-# 3. The link rule hardcodes its flags, so do that step by hand: Ubuntu's GCC
-#    emits a build-id note that lands at address 0 and collides with .text.
-m68k-linux-gnu-gcc -m68000 -n -T SGDK/md.ld -nostdlib \
-  out/release/sega.o out/release/src/main.o libmd.a -lgcc \
-  -o out/release/rom.out -Wl,--gc-sections -Wl,--build-id=none -fno-lto
-m68k-linux-gnu-objcopy -O binary out/release/rom.out rom.bin
-java -jar SGDK/bin/sizebnd.jar rom.bin -sizealign 131072
+gcc -O2 -o /tmp/bintos SGDK/tools/bintos/src/bintos.c     # ships with SGDK
 ```
 
-Then fix the header checksum (sizebnd's `-checksum` did not take here):
+The library build needs `sjasm` for seven `.s80` Z80 drivers. Those assemble to
+**pure data** — every one of the resulting objects has a zero-length `.text` —
+so the blobs already inside the shipped library can be reused verbatim instead,
+carrying no ABI with them. `tools/sgdk_fake_sjasm.sh` extracts them.
+
+```sh
+cd SGDK
+make -f makelib.gen PREFIX=m68k-linux-gnu- \
+     ASMZ80=../tools/sgdk_fake_sjasm.sh BINTOS=/tmp/bintos
+```
+
+Then build the ROM with the stock makefile. Ubuntu's cross-GCC defaults to
+emitting a build-id note, which on a bare-metal link lands at address 0 and
+collides with `.text`; a wrapper adds `-Wl,--build-id=none` at link time only.
+An `m68k-elf` toolchain needs neither the wrapper nor any of the above.
+
+```sh
+make -f SGDK/makefile.gen GDK=SGDK PREFIX=/path/to/wrapper/m68k-linux-gnu-
+```
+
+Finally set the header checksum, which `sizebnd`'s `-checksum` did not write here:
 
 ```python
 d = bytearray(open('rom.bin','rb').read())

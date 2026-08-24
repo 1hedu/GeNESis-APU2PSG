@@ -710,9 +710,13 @@ static void drawUi(void)
                                     : "START mode  MODE noise-audition", 2, y);
 }
 
-int main(void)
+// SGDK calls main with a flag saying whether this was a cold boot; declaring it
+// void mismatches the library's own prototype, which LTO rightly complains about.
+int main(bool hardReset)
 {
     u16 i;
+
+    (void)hardReset;
 
     for (i = 0; i < 4096; i++) dpcmRing[i] = 0x80;
 
