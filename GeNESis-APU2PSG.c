@@ -83,19 +83,51 @@ static const u8 nesVolToAtten[16] = {15, 12, 9, 7, 6, 5, 4, 3, 3, 2, 2, 1, 1, 1,
 // Duty as a threshold on the phase accumulator's high byte.
 static const u8 dutyThreshold[4] = {32, 64, 128, 192};   // 12.5, 25, 50, 75 %
 
+// A DAC-mode voice is exactly 6 dB quieter than the same channel making a tone.
+//
+// The Sega PSG takes a period of 0 literally rather than substituting 0x400 the
+// way a discrete SN76489 does, so the channel toggles every internal clock: a
+// 112 kHz square that the output filter averages to half the attenuator's level.
+// That halving is what the volume DAC modulates, so its fundamental is (2/pi)(V/2)
+// where a hardware square at the same attenuation gives (2/pi)V -- a factor of
+// two on the nose. Without this, a pulse crossing the pitch ceiling would jump
+// 6 dB louder at the handover. Attenuation is 2 dB a step, so the correction is 3.
+#define HW_ATTEN_OFFSET 3
+
+static inline u8 hwAtten(u8 att)
+{
+    u16 a = att + HW_ATTEN_OFFSET;
+    return (a > 15) ? 15 : (u8)a;
+}
+
 // Channel-2 tone period that clocks the noise generator at the NES rate.
 //
 // The shift register advances once per tone-3 output cycle, so its rate is
-// clock/(32*P) -- the same as the tone frequency, not twice it. Two documented
-// facts pin this down and agree: the three fixed rates are clock/512, /1024,
-// /2048, and they are equivalent to tone periods 0x10, 0x20, 0x40. Only
-// clock/(32*P) satisfies both. Getting this wrong puts every drum an octave out.
+// clock/(32*P) -- the same as the tone frequency, not twice it. MAME settles it:
+// the noise counter reloads with (tone-3 period << 1) at the internal clock/16,
+// one shift per expiry, which is also how the fixed settings come out as
+// clock/512, /1024 and /2048. Getting this wrong puts every drum an octave out.
+//
+// Two more things the reference implementation settles, both of which this code
+// depends on:
+//   - Writing tone channel 2's period updates the noise rate immediately while
+//     mode 3 is selected, without touching the noise control register. So drum
+//     pitch can move without retriggering the sequence.
+//   - Writing the noise control register reseeds the shift register on every
+//     write, not only when the mode bit changes -- the Sega part is not the
+//     NCR variant. Hence the change-guard in noiseOut().
 //
 // White (long) mode matches the shift rate. Periodic (short) mode matches
-// perceived pitch instead, because the NES's short sequence is 93 steps to the
-// PSG's 15 and matching the clock would put it six octaves out.
+// perceived pitch instead, because matching the clock would put it octaves out:
+// the NES's short sequence is 93 steps, and the PSG's periodic mode is a pure
+// rotate of the shift register, so it pulses once per register width.
+//
+// That width is 16 on the Sega PSG, not the discrete SN76489's 15 -- the Sega
+// part widened it (MAME: feedback mask 0x8000 versus 0x4000, taps 0x01/0x08
+// versus 0x01/0x02). Using 15 here puts every periodic drum about a semitone
+// flat. Indices 0 and 15 are unreachable and pin at the ends.
 static const u16 noisePeriodWhite[16]    = {1, 1, 1, 2, 4, 6, 8, 10, 13, 16, 24, 32, 48, 63, 127, 254};
-static const u16 noisePeriodPeriodic[16] = {2, 3, 6, 12, 25, 37, 50, 62, 78, 98, 147, 197, 295, 394, 788, 1023};
+static const u16 noisePeriodPeriodic[16] = {1, 3, 6, 12, 23, 35, 46, 58, 73, 92, 138, 185, 277, 369, 739, 1023};
 
 // Nearest of the PSG's three fixed noise rates, and whether that nearest is more
 // than 25% out. The fixed rates land on indices 9, 11 and 13 -- to within 0.8%,
@@ -491,7 +523,7 @@ static void synthUpdate(void)
         {
             PSGDAC_setPulse(i, 0, 0, 15, 0);
             toneOut(i, period + 1);         // PSG clock is exactly 2x the NES's,
-            attenOut(i, att);               // and it divides by 32 to the NES's 16
+            attenOut(i, hwAtten(att));      // and it divides by 32 to the NES's 16
         }
         voiceIsDac[i] = useDac;
     }
@@ -540,7 +572,7 @@ static void synthUpdate(void)
         if (p < 1) p = 1;
         PSGDAC_setWave(0, 0);
         toneOut(2, (u16)p);
-        attenOut(2, nesVolToAtten[12]);     // NES triangle has no volume control
+        attenOut(2, hwAtten(nesVolToAtten[12]));  // NES triangle has no volume control
         triSource = TRI_HW;
     }
 
@@ -570,7 +602,7 @@ static void synthUpdate(void)
         {
             noiseOut(white, noiseFixedRate[noisePeriodIdx]);
         }
-        attenOut(3, nesVolToAtten[noiseVol]);
+        attenOut(3, hwAtten(nesVolToAtten[noiseVol]));
     }
     else
     {

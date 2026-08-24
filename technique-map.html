@@ -321,10 +321,16 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
     and channel 2's period is 10 bits &mdash; which brings 14 of the 16 within 3%. The two fastest
     are out of range: they want shift-register periods below 1.</p>
     <p>The shift register advances once per tone-3 output cycle, so its rate is clock/(32&thinsp;&times;&thinsp;P).
-    That divisor is worth stating because getting it wrong puts every drum an octave out: the three fixed
-    rates are documented both as clock/512, /1024, /2048 <em>and</em> as tone periods 0x10, 0x20, 0x40, and
-    only this reading satisfies both. It also places the fixed rates on periods 9, 11 and 13 &mdash; to within
-    0.8%, which is presumably why the chip has them.</p>
+    That divisor is worth stating because getting it wrong puts every drum an octave out &mdash; and reasoning
+    from the documented figures alone got it backwards here once. The reference implementation settles it:
+    the noise counter reloads with tone&nbsp;3's period doubled, one shift per expiry, which is also how the
+    fixed settings come out as clock/512, /1024 and /2048. It places those three on periods 9, 11 and 13, to
+    within 0.8% &mdash; presumably why the chip has them.</p>
+    <p>Two more things the same source settles. Writing tone&nbsp;2's period updates the noise rate
+    immediately while mode&nbsp;3 is selected, so drum pitch can move without retriggering. And the noise
+    control register reseeds the shift register on <em>every</em> write, not only when the mode bit changes
+    &mdash; the Sega part is not the NCR variant. The Sega shift register is also 16 bits wide rather than
+    the SN76489's 15, which shifts every periodic-mode mapping by a semitone.</p>
     <p>The price used to be channel 2, which is where the triangle lived. With the triangle on FM there is
     nothing to pay, so this mode is simply on &mdash; and it stays on rate 3 for every period rather than
     switching back and forth, because writing the noise control register resets the shift register and a
@@ -376,7 +382,7 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
       <span class="lab">Tone-clocked noise</span>
       <h3>Channel 2 as a shift clock</h3>
       <p>Turns 3 reachable noise periods into 14, in both long and short mode. Short mode needs its own
-      table: the NES sequence is 93 steps to the PSG's 15, so it matches pitch rather than clock &mdash; which
+      table: the NES sequence is 93 steps to the Sega PSG's 16, so it matches pitch rather than clock &mdash; which
       also lifts the two fastest periods back into range.</p>
       <p class="cost"><b>costs</b> nothing, once the triangle is on FM &middot; <b>gives</b> the drum kit</p>
     </div>

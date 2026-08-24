@@ -48,7 +48,9 @@ The figures here and in **[the crossover map](https://claude.ai/code/artifact/09
 The PSG's own square wave. Pitch-exact, costs nothing, works at any pitch the chip can reach. Two limits: it is 50% duty and only 50% duty, and its period register is 10 bits, so it bottoms out at **109 Hz**. The NES triangle goes down to 27 Hz. Below 109 Hz the hardware generator does not go flat, it simply cannot go there at all.
 
 ### 2. Volume DAC  *(the main solution)*
-Park the tone period at 0 so the channel outputs DC, then rewrite its attenuation register from a free-running Z80 loop. The attenuator is logarithmic, which turns out to be a gift: scaling a waveform by a volume is *addition* in the log domain, so a whole pulse voice is eight instructions with no wavetable at all —
+Park the tone period at 0 and rewrite the channel's attenuation register from a free-running Z80 loop.
+
+The Sega PSG takes a period of 0 literally, where a discrete SN76489 would substitute 0x400 — so the channel toggles every internal clock, giving a 112 kHz square that the output filter averages to *half* the attenuator's level. That halved level is what the volume DAC modulates, which makes the trick Sega-specific and makes a DAC voice exactly 6 dB quieter than the same channel making a tone: its fundamental is (2/π)(V/2) against a hardware square's (2/π)V. Hardware-path voices therefore carry +3 attenuation steps, or a pulse would jump 6 dB louder the moment it crossed the pitch ceiling. The attenuator is logarithmic, which turns out to be a gift: scaling a waveform by a volume is *addition* in the log domain, so a whole pulse voice is eight instructions with no wavetable at all —
 
 ```
         ld de,DELTA         ; phase += delta
@@ -94,7 +96,14 @@ The PSG's noise generator has three fixed rates. The NES has sixteen periods in 
 
 Fourteen of sixteen. Indices 0 and 1 want a shift-register period below 1 and are out of the chip's reach in white mode — though short mode's ×6.2 pitch factor lifts them back into range.
 
-**The divisor matters more than anything else here.** The shift register advances once per tone-3 *output cycle*, so its rate is clock/(32·P) — the same as the tone frequency, not twice it. Two documented facts pin it down and agree: the three fixed rates are clock/512, /1024 and /2048, *and* they are equivalent to tone periods 0x10, 0x20, 0x40. Only clock/(32·P) satisfies both. Read it the other way and every drum lands an octave out. That reading also places the fixed rates on NES indices **9, 11 and 13**, each to within 0.8% — presumably why the chip has exactly those three.
+**The divisor matters more than anything else here.** The shift register advances once per tone-3 *output cycle*, so its rate is clock/(32·P) — the same as the tone frequency, not twice it. Read it the other way and every drum lands an octave out, which is exactly what happened here on the first pass: reasoning from the documented figures alone produced clock/(16·P). Checking a reference implementation settles it in a minute — the noise counter reloads with tone 3's period *doubled*, at the internal clock/16, one shift per expiry, which is also how the three fixed settings come out as clock/512, /1024 and /2048.
+
+That reading places the fixed rates on NES indices **9, 11 and 13**, each to within 0.8% — presumably why the chip has exactly those three.
+
+Two more things worth knowing, both of which this code leans on:
+
+- **Writing tone 2's period updates the noise rate immediately** while mode 3 is selected, with no write to the noise control register. So drum pitch can be swept without retriggering the sequence.
+- **The noise control register reseeds the shift register on every write**, not only when the mode bit changes — the Sega part is not the NCR variant. That is what makes the change-guard below a correctness requirement rather than an optimisation.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/noise-coverage-dark.png">
@@ -103,7 +112,9 @@ Fourteen of sixteen. Indices 0 and 1 want a shift-register period below 1 and ar
 
 *All 16 NES noise periods. Blue is reachable with one of the PSG's three fixed rates, gold needs channel 2 as the shift clock, grey is out of range. Bars are each period's share of noise-active frames in the checked-in capture.*
 
-Short (periodic) mode needs a different mapping. The NES's short sequence is 93 steps to the PSG's 15, so matching the shift *rate* would put the pitch six octaves out; the table matches perceived pitch instead. Indices 14 and 15 clamp, at 9.5 Hz and 4.7 Hz, which is below hearing anyway.
+Short (periodic) mode needs a different mapping. The NES's short sequence is 93 steps; the PSG's periodic mode is a pure rotate of its shift register, so it pulses once per register width. Matching the shift *rate* would put the pitch octaves out, so the table matches perceived pitch instead.
+
+That register is **16 bits wide on the Sega PSG**, not the discrete SN76489's 15 — Sega widened it (feedback mask 0x8000 against 0x4000, taps 0x01/0x08 against 0x01/0x02). Using 15 puts every periodic drum about a semitone flat. Indices 0 and 15 are out of reach and pin at the ends; 15 lands at 6.8 Hz against a target of 4.7, which is below hearing either way.
 
 **The price used to be channel 2, which is where the triangle lives** — that was the trade the old TODO asked about. In the checked-in capture, **64.3% of noise-active frames use a period the three fixed rates cannot reach**; index 13 is the one heavily-used period they do cover. With the triangle moved to FM there is nothing left to pay, so this mode is simply on.
 
