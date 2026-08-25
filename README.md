@@ -4,9 +4,7 @@ This project is devoted to Krikkz, the inventor of EverDrive.
 
 I used it to play a MegaDrive port of Super Mario Bros. 1, and it mapped some of the soundtrack to the FM synth. I think it was just the bass, but still very cool to hear it playback with that Sega character. Then I learned, that the Everdrive PRO, actually included a NES core on the FPGA. I was then struck by the idea to do this project--after all it should be possible. 
 
-I chose to start with the PSG only because even without layering FM color, the difference in soundchip and circuitry on the two different hardware platforms, should still produce some distinctly-Sega timbre, in theory. I thought about how to use the PSG to emulate the Triangle channel, and pulse waves with Duty other than 50%. Ultimately, to avoid the FM synth to the utmost, probably requires Z80 assembly.
-
-Currently, frequency-accurate playback of each channel is working. Volume modulation per NES envelopes is working on all channels. <s> except Square 3, which is Triangle on NES.</s>  This is enough to get a song to playback very recognizably.   
+I chose to start with the PSG only because even without layering FM color, the difference in soundchip and circuitry on the two different hardware platforms, different sample rate, should still produce some distinctly-Sega timbre, in theory. Indeed, with the volume DAC solution its definitely got...character.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/crossover-dark.png">
@@ -97,12 +95,4 @@ masked with `0x7FF`.
 - Thank you to AlyJames, who helped elucidate the potential of pulse waves on the Genesis, for me, a random DM.
 
 # TODO:
-1. <s>Fix Triangle. Not playing correct note lengths.</s>
-2. <s>Complete mapping of 32 Noise sounds possible on NES.</s> Done — 14 of 16 periods via tone-clocked noise; short mode reaches 15.
-3. Test timbre tricks and FM synth integration.
-      - <s>Volume DAC for pulses of various duty, and triangle, on PSG.</s> Done — the main solution.
-      - <s>FM DAC channel for NES DPCM.</s> Done — YM2612 channel 6.
-      - <s>Something better than the PSG for the Triangle.</s> Done — FM, algorithm 7.
-      - Two detuned/phase-offset PSG squares as a duty fallback above the volume DAC's pitch ceiling.
-4. <s>Test on real hardware.</s> Done.
-5. Get the attention of Krikkz, so he might add this to his NES core on his Mega Everdrive PRO
+6. Get the attention of Krikkz, so he might add this to his NES core on his Mega Everdrive PRO
