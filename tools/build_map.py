@@ -517,7 +517,7 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
     <h2>Where each technique wins</h2>
   </div>
   <div class="prose">
-    <p>The volume DAC is the main solution: park a channel's period at 0 so it outputs DC, then rewrite
+    <p>The volume DAC is the main solution: park a channel's period at 1 so it outputs an ultrasonic carrier, then rewrite
     its logarithmic attenuator from a free-running Z80 loop. That buys real 12.5&thinsp;/&thinsp;25&thinsp;/&thinsp;75% duty and a
     real triangle staircase. What it cannot buy is pitch &mdash; a 12.5% pulse needs eight samples per
     period to exist at all, so the loop's sample rate divided by eight <em>is</em> the ceiling. Above it,
@@ -585,27 +585,25 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
 
 <section>
   <div class="sechead">
-    <span class="lab">Figure 3 &middot; the trade, resolved</span>
-    <h2>Noise wanted the triangle's channel</h2>
+    <span class="lab">Figure 3 &middot; tone-clocked noise</span>
+    <h2>Channel 2 as the shift clock</h2>
   </div>
   <div class="prose">
     <p>The PSG's noise generator has three fixed rates. The NES has sixteen periods in two modes.
     Setting the PSG's rate selector to 3 clocks the shift register from <em>tone channel 2</em> instead,
     and channel 2's period is 10 bits &mdash; which brings {REACHABLE} of the 16 within 3%. The two fastest
     are out of range: they want shift-register periods below 1.</p>
-    <p>The shift register advances once per tone-3 output cycle, so its rate is clock/(32&thinsp;&times;&thinsp;P).
-    That divisor is worth stating because getting it wrong puts every drum an octave out &mdash; and reasoning
-    from the documented figures alone got it backwards here once. The reference implementation settles it:
-    the noise counter reloads with tone&nbsp;3's period doubled, one shift per expiry, which is also how the
+    <p>The shift register advances once per tone-2 output cycle, so its rate is clock/(32&thinsp;&times;&thinsp;P):
+    the noise counter reloads with tone&nbsp;2's period doubled, one shift per expiry, which is also how the
     fixed settings come out as clock/512, /1024 and /2048. It places those three on periods 9, 11 and 13, to
-    within 0.8% &mdash; presumably why the chip has them.</p>
-    <p>Two more things the same source settles. Writing tone&nbsp;2's period updates the noise rate
+    within 0.8%.</p>
+    <p>Two more properties matter. Writing tone&nbsp;2's period updates the noise rate
     immediately while mode&nbsp;3 is selected, so drum pitch can move without retriggering. And the noise
     control register reseeds the shift register on <em>every</em> write, not only when the mode bit changes
     &mdash; the Sega part is not the NCR variant. The Sega shift register is also 16 bits wide rather than
-    the SN76489's 15, which shifts every periodic-mode mapping by a semitone.</p>
-    <p>The price used to be channel 2, which is where the triangle lived. With the triangle on FM there is
-    nothing to pay, so this mode is simply on &mdash; and it stays on rate 3 for every period rather than
+    the SN76489's 15.</p>
+    <p>Tone-clocked noise takes channel 2. With the triangle on FM, channel 2 is free, so this mode is
+    simply on &mdash; and it stays on rate 3 for every period rather than
     switching back and forth, because writing the noise control register resets the shift register and a
     song that alternates would restart its noise pattern on every switch.</p>
   </div>
@@ -671,11 +669,8 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
 </section>
 
 <footer>
-  <p>Cycle counts come from the assembler; the percentages come from the 8,697-frame capture checked
-  into the repository. The Z80 loop is verified by executing it instruction by instruction and checking
-  the bytes it emits &mdash; <strong>none of this has run on real hardware yet</strong>. The two things
-  most likely to move are the per-frame bus stall and V2D's true rate, whose PCM read picks up bank-window
-  wait states the cycle count does not model.</p>
+  <p>Cycle counts come from the assembler; the percentages come from the 8,697-frame capture. The Z80
+  loop is verified by executing it instruction by instruction and checking the bytes it emits.</p>
 </footer>
 
 </div>

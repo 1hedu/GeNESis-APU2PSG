@@ -8,14 +8,14 @@ I chose to start with the PSG only because even without layering FM color, the d
 
 Currently, frequency-accurate playback of each channel is working. Volume modulation per NES envelopes is working on all channels. <s> except Square 3, which is Triangle on NES.</s>  This is enough to get a song to playback very recognizably.   
 
-**It requires Z80 assembly, and now it has some.** The PSG's attenuator is a 4-bit logarithmic DAC; park a tone channel's period at 0 so its output is DC and rewrite that attenuator fast enough, and the channel stops being a square wave and becomes a waveform generator. That gives real 12.5% / 25% / 75% pulses and a real triangle staircase, on the PSG, with no FM. It also has hard limits, and those limits are why this is now a *combination* of techniques rather than one.
+The PSG's attenuator is a 4-bit logarithmic DAC. Park a tone channel's period at 1 so its output is an ultrasonic carrier, rewrite that attenuator fast enough from the Z80, and the channel stops being a square wave and becomes a waveform generator. That gives real 12.5% / 25% / 75% pulses and a real triangle staircase on the PSG with no FM. It has hard limits, and those limits are why playback is a combination of techniques rather than one.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/crossover-dark.png">
-  <img alt="Pitch map: the triangle sits on FM at any pitch; the volume DAC covers pulses below 2905 Hz in V2 and 1841 Hz in V3, above which each voice falls back to the PSG hardware tone generator." src="docs/crossover-light.png">
+  <img alt="Pitch map: the triangle sits on FM at any pitch; the volume DAC covers pulses below 3107 Hz in V2 and 1920 Hz in V3, above which each voice falls back to the PSG hardware tone generator." src="docs/crossover-light.png">
 </picture>
 
-*Which technique covers which pitch, per voice. Red is the volume DAC, blue is the PSG's own tone generator; the hatched zone is where the DAC is not an upgrade but the only option. Full interactive version: **[the crossover map](https://claude.ai/code/artifact/09fba06d-d92a-44e6-b7d8-c447f013e359)**. Details below.*
+*Which technique covers which pitch, per voice. Red is the volume DAC, blue is the PSG's own tone generator; the hatched zone is where the DAC is the only option. Interactive version: `technique-map.html`. Details below.*
 
 
 Requirements:
@@ -27,13 +27,8 @@ Requirements:
 `rom.bin` is checked in and built from the current source — load that and it
 should just work. **The capture is baked into the cart and starts playing at
 boot with no script at all** (press B to switch to the live script path), so any
-Genesis emulator — or an Everdrive — can play it standalone. That also makes it
-the control experiment when a crash might be script-related. To change the code you need SGDK; see **[BUILDING.md](BUILDING.md)**,
+Genesis emulator — or an Everdrive — can play it standalone. To change the code you need SGDK; see **[BUILDING.md](BUILDING.md)**,
 which also records exactly how the checked-in ROM was produced.
-
-**If it sounds like all squares, you are running the old ROM.** The current build
-shows `MODE` and `LOOP` on the top two lines of the overlay and tags each voice
-`DAC` / `HW` / `FM`. `Selected CH1` means the pre-2026 binary.
 
 # To record NES audio:
 Open up FCEUX, load GeNESis-APU2PSG-Recorder lua script. It should run without error. 
@@ -51,7 +46,7 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 
 Four techniques, none of which covers the whole job. What follows is which one wins where, and why.
 
-The figures here and in **[the crossover map](https://claude.ai/code/artifact/09fba06d-d92a-44e6-b7d8-c447f013e359)** are generated, not drawn. Rebuild them from the repo root with `python3 tools/build_map.py technique-map.html`; every coordinate and percentage comes from the assembler's cycle counts and `nes_apu_data.txt`, so the pictures cannot drift from the code.
+The figures here and in `technique-map.html` are generated from the assembler's cycle counts and `nes_apu_data.txt`. Rebuild them from the repo root with `python3 tools/build_map.py technique-map.html`.
 
 ### 1. Hardware tone generator
 The PSG's own square wave. Pitch-exact, costs nothing, works at any pitch the chip can reach. Two limits: it is 50% duty and only 50% duty, and its period register is 10 bits, so it bottoms out at **109 Hz**. The NES triangle goes down to 27 Hz. Below 109 Hz the hardware generator does not go flat, it simply cannot go there at all.
@@ -61,7 +56,9 @@ Park the tone period at **1** — the classic SMS PCM trick — and rewrite the 
 
 Period 1 gives a 55.9 kHz carrier: ultrasonic on hardware, averaged by the output stage to *half* the attenuator's level. That halved level is what the volume DAC modulates, and it makes a DAC voice exactly 6 dB quieter than the same channel making a tone — its fundamental is (2/π)(V/2) against a hardware square's (2/π)V — so hardware-path voices carry +3 attenuation steps to match.
 
-Why not period 0? Because its behaviour is not portable: MAME-lineage emulators toggle it at 112 kHz (same mean as period 1), but older emulators and some real silicon substitute 0x400 — an **audible 109 Hz square** underneath every DAC voice. An earlier build parked at 0 and sounded fine in PicoDrive while real hardware and Gens r57shell both played a low buzz that wasn't in the score. Period 1 behaves identically everywhere. The attenuator is logarithmic, which turns out to be a gift: scaling a waveform by a volume is *addition* in the log domain, so a whole pulse voice is eight instructions with no wavetable at all —
+Why not period 0? Its behaviour is not portable: MAME-lineage emulators toggle it at 112 kHz (same mean as period 1), but older emulators and some real silicon substitute 0x400 — an **audible 109 Hz square** underneath every DAC voice. Period 1 behaves identically everywhere.
+
+The attenuator is logarithmic, so scaling a waveform by a volume is *addition* in the log domain — a whole pulse voice is eight instructions with no wavetable:
 
 ```
         ld de,DELTA         ; phase += delta
@@ -76,7 +73,7 @@ Why not period 0? Because its behaviour is not portable: MAME-lineage emulators 
 
 63 Z80 cycles a voice. The triangle needs a real 32-step table, so it costs 89.
 
-**Sample rate is loop length.** That is the whole cost model, and it is why this "struggles with more pitch or channels" — they are the same problem seen from two sides. Each voice you add lengthens the loop, which lowers the sample rate, which lowers the pitch ceiling for *every* voice. So the driver ships three loop variants and the ROM picks one per frame:
+**Sample rate is loop length.** That is the whole cost model: more voices and more pitch trade against each other directly. Each voice added lengthens the loop, which lowers the sample rate, which lowers the pitch ceiling for *every* voice. So the driver ships three loop variants and the ROM picks one per frame:
 
 | variant | voices | cycles | sample rate | 12.5% duty ceiling |
 |---|---|---|---|---|
@@ -86,14 +83,10 @@ Why not period 0? Because its behaviour is not portable: MAME-lineage emulators 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/loop-budget-dark.png">
-  <img alt="Z80 cycles per sample for each loop variant: two pulse voices at 63 cycles each, a wave voice at 89, a PCM voice at 31, 18 cycles of loop overhead and a 10-cycle service slot." src="docs/loop-budget-light.png">
+  <img alt="Z80 cycles per sample for each loop variant: two pulse voices at 63 cycles each, a wave voice at 89, a PCM voice at 31, plus 18 cycles of loop overhead." src="docs/loop-budget-light.png">
 </picture>
 
 A 12.5% pulse needs eight slots per period to exist at all, so the ceiling is the sample rate over eight. Above it the voice is handed back to the hardware tone generator: the pitch stays exact and the duty degrades to 50%, which is a far better trade than an aliased 12.5% pulse.
-
-Measured against the capture checked into this repo (8697 frames):
-- **85% of pulse-1 frames use a duty the PSG hardware cannot make** (61.5% at 12.5%, 23.4% at 75%). This is the technique earning its keep.
-- **97% of pulse frames sit at or below V3's ceiling**, 100% below V2's. So the crossover fires on about 3% of frames — audible on the high lead runs, which is exactly where it was reported to struggle.
 
 ### 3. Tone-clocked noise ("special" noise mode)
 The PSG's noise generator has three fixed rates. The NES has sixteen periods in two modes, so 32 sounds. Setting the PSG's noise rate selector to 3 clocks the shift register from **tone channel 2** instead, and channel 2's period is 10 bits — so most of the NES's rate table becomes reachable:
@@ -105,11 +98,9 @@ The PSG's noise generator has three fixed rates. The NES has sixteen periods in 
 
 Fourteen of sixteen. Indices 0 and 1 want a shift-register period below 1 and are out of the chip's reach in white mode — though short mode's ×6.2 pitch factor lifts them back into range.
 
-**The divisor matters more than anything else here.** The shift register advances once per tone-3 *output cycle*, so its rate is clock/(32·P) — the same as the tone frequency, not twice it. Read it the other way and every drum lands an octave out, which is exactly what happened here on the first pass: reasoning from the documented figures alone produced clock/(16·P). Checking a reference implementation settles it in a minute — the noise counter reloads with tone 3's period *doubled*, at the internal clock/16, one shift per expiry, which is also how the three fixed settings come out as clock/512, /1024 and /2048.
+The shift register advances once per tone 2 *output cycle*, so its rate is clock/(32·P) — the same as the tone frequency, not twice it: the noise counter reloads with tone 2's period *doubled*, at the internal clock/16, one shift per expiry, which is also how the three fixed settings come out as clock/512, /1024 and /2048. Those land on NES indices **9, 11 and 13**, each to within 0.8%.
 
-That reading places the fixed rates on NES indices **9, 11 and 13**, each to within 0.8% — presumably why the chip has exactly those three.
-
-Two more things worth knowing, both of which this code leans on:
+Two more properties the code relies on:
 
 - **Writing tone 2's period updates the noise rate immediately** while mode 3 is selected, with no write to the noise control register. So drum pitch can be swept without retriggering the sequence.
 - **The noise control register reseeds the shift register on every write**, not only when the mode bit changes — the Sega part is not the NCR variant. That is what makes the change-guard below a correctness requirement rather than an optimisation.
@@ -123,11 +114,11 @@ Two more things worth knowing, both of which this code leans on:
 
 Short (periodic) mode needs a different mapping. The NES's short sequence is 93 steps; the PSG's periodic mode is a pure rotate of its shift register, so it pulses once per register width. Matching the shift *rate* would put the pitch octaves out, so the table matches perceived pitch instead.
 
-That register is **16 bits wide on the Sega PSG**, not the discrete SN76489's 15 — Sega widened it (feedback mask 0x8000 against 0x4000, taps 0x01/0x08 against 0x01/0x02). Using 15 puts every periodic drum about a semitone flat. Indices 0 and 15 are out of reach and pin at the ends; 15 lands at 6.8 Hz against a target of 4.7, which is below hearing either way.
+That register is **16 bits wide on the Sega PSG**, not the discrete SN76489's 15 (feedback mask 0x8000 against 0x4000, taps 0x01/0x08 against 0x01/0x02). Indices 0 and 15 are out of reach and pin at the ends.
 
-**The price used to be channel 2, which is where the triangle lives** — that was the trade the old TODO asked about. In the checked-in capture, **64.3% of noise-active frames use a period the three fixed rates cannot reach**; index 13 is the one heavily-used period they do cover. With the triangle moved to FM there is nothing left to pay, so this mode is simply on.
+Tone-clocked noise takes channel 2. With the triangle on FM, channel 2 is free, so this mode is simply on.
 
-Three further nuances, all of which will bite:
+Three implementation details:
 
 - **Channel 2 keeps making sound while it clocks the noise.** Its own square is still routed to the mixer, and at the slow end of the table it is squarely audible — period 254 sits at 440 Hz. It has to be attenuated to 15 explicitly.
 - **Writing the noise control register resets the shift register.** Rewriting the same value every frame restarts the noise pattern 60 times a second, which is a 60 Hz buzz rather than a drum. The register is only written on an actual change — which is also what percussion wants, since each hit then starts from the same point in the sequence. Changing channel 2's *period* does not reset it, so noise sweeps stay smooth.
@@ -140,13 +131,13 @@ A triangle is odd harmonics falling at 1/n², and YM2612 algorithm 7 is four car
 MUL=1 TL=0    MUL=3 TL=26    MUL=5 TL=38    MUL=7 TL=47      (plus a common offset for headroom)
 ```
 
-Measured as spectral error against the NES's own 32-step staircase: volume DAC −20.1 dB, FM −24.2 dB. Against a clean triangle the gap widens to −19.0 vs −34.8 dB. The volume DAC's problem is structural — 2 dB attenuation steps cannot resolve a 16-level linear staircase near full scale, so five pairs of levels collapse onto one attenuation and the peaks flatten; worst level error is 7.2% of full scale. FM's total level is 0.75 dB a step, and its pitch is exact to within a third of a cent from 27 Hz up.
+The volume DAC's 2 dB attenuation steps cannot resolve a 16-level linear staircase near full scale, so the staircase's peaks flatten. FM's total level is 0.75 dB a step, and its pitch is exact from 27 Hz up.
 
-*(Caveat: FM operators cannot be inverted and a triangle's harmonics alternate in sign. The magnitude spectrum matches; the scope trace will not look like a triangle.)*
+*(FM operators cannot be inverted and a triangle's harmonics alternate in sign. The magnitude spectrum matches; the scope trace will not look like a triangle.)*
 
-The real value is second-order, and it lands twice:
+Moving the triangle to FM pays twice more:
 
-- **The wave voice leaves the Z80 loop**, shortening it from 233 to 144 cycles. The pulse ceiling goes from 1920 Hz to 3107 Hz — 97% → **100%** of pulse frames in the capture keep their true duty.
+- **The wave voice leaves the Z80 loop**, shortening it from 233 to 144 cycles. The pulse ceiling goes from 1920 Hz to 3107 Hz.
 - **PSG channel 2 goes free**, so tone-clocked noise stops costing anything and every reachable NES noise period is available at once.
 
 That is why the default mode is FM TRI. The PSG-only path is still one button away.
@@ -156,18 +147,13 @@ DPCM does not belong on the volume DAC. It would consume the entire Z80 loop, ta
 
 The samples stream out of 68000 RAM through the Z80's bank window, *not* over the Z80 bus — because every byte the 68000 hands to the Z80 requires stopping the Z80, and stopping the Z80 stops the audio.
 
-Status: **working, on a real commercial sample.** The C button now plays an actual DPCM sound effect extracted from *Punch-Out!!* — not a synthetic test tone. That took two rounds:
+The C button plays a DPCM sample (a punch impact from *Punch-Out!!*) through the full chain: the allocator switches the loop to V2D, the Z80 streams the ring one byte a sample into the DAC, and the 68000 refills the pages behind the reader.
 
-*Duck Tales* was tried first and turned out to use no DPCM at all — exactly one `STA $4015` in the whole ROM, value `$0F`, the DMC-enable bit explicitly left clear. Capcom built its entire soundtrack, including drums, on the four standard channels. That's a real, useful negative result, not a dead end: it exposed a genuine bug in `tools/gen_dpcm.py`'s address math (see below) before the tool ever got to run against a ROM that actually had DMC data.
+Samples are extracted from the NES ROM rather than recorded, because `$4012`/`$4013` name where a sample lives: `0xC000 + 64·addr`, running `16·len + 1` bytes. `tools/gen_dpcm.py` pulls those bytes out of the `.nes` file, decodes the DMC's 1-bit delta stream against the `$4010` rate table, and resamples to the V2D loop rate. Games that trigger samples through a lookup table instead of hardcoded immediates (Punch-Out!! indexes one shared routine by effect number, interleaved addr/len bytes at `$F766`) are handled with `gen_dpcm.py --pick rom.nes addr len rate`.
 
-*Punch-Out!!* does use DPCM — for every punch/knockdown impact — but not the simple hardcoded-immediate pattern `gen_dpcm.py`'s scanner looks for. All of it goes through one shared trigger routine, indexed by effect number into a table: `LDA $F766,Y / STA $4012` then `LDA $F767,Y / STA $4013`, interleaved (addr, len) bytes per effect. Reading that table out (20 candidate entries) and validating each by decoding its DMC bits and checking bit-to-bit run correlation — real audio has correlated runs from a slowly-varying analog signal; misread garbage looks close to coin-flip-random — found 10 of 20 scoring 0.62–0.83 (0.5 = random) and clearly audio-shaped, against 3 that scored at or below random. `addr=124 len=125` (2001 DMC bytes, correlation 0.83, a clean attack-decay envelope) was extracted, decoded, resampled to the V2D loop rate, and embedded as the new test sample.
+Script-side capture (`RECORD_DPCM = true` in the recorder) feeds the same ring for the live-play path.
 
-Verified in PicoDrive: with all three PSG voices muted, the trigger window measures RMS 2025 against a 600 baseline (the song's own noise-channel drums) — unmistakably audible — and by 400 frames later has decayed back to within measurement noise of that same baseline (688 vs 693), confirming clean winddown rather than a stuck loop.
-
-`gen_dpcm.py --pick rom.nes addr len rate -o out.h` extracts one sample this way, for exactly this case: a real trigger found by reading the code, not a recorded capture. Script-side capture (`RECORD_DPCM = true` in the recorder) still feeds the same ring for the live-play path; that half is exercised by the same code, not yet by a real captured stream.
-
-### What this means for the FM ideas in the old TODO
-Two of them are now unnecessary rather than unfinished. The volume DAC produces the duties directly, so there is nothing left for "50% square + FM to color it into 12.5%" to fix, and nothing left for a DC-offset trick on an FM operator to reach. FM's remaining jobs are the ones the PSG genuinely cannot do: the triangle, the DAC channel for DPCM, and extra polyphony above the volume DAC's pitch ceiling if you ever want the high leads to keep their duty. FM is measurably *worse* than the volume DAC at pulses at every pitch tested — best 2-operator FM manages −7.1 dB against a 12.5% target where the DAC gets −18.5 dB at 220 Hz — so it is only worth a pulse slot above the ceiling, where today's fallback is a plain 50% square at −2.2 dB.
+FM is not a substitute for the volume DAC on the pulses. An FM pulse would only earn a slot above the DAC's pitch ceiling, where the current fallback is a plain 50% square.
 
 
 # Who writes what
@@ -178,8 +164,6 @@ That split works because of a fact that is easy to miss: **the PSG is not on the
 
 - **A PSG tone period is a latch byte plus a data byte**, and the Z80's attenuation bytes re-point the chip's register latch. So tone-period pairs are wrapped in a short bus request — the Z80 is stopped for a couple of microseconds and nothing can interleave. Attenuation and noise-control writes are single self-contained bytes and go out bare.
 - **The YM2612 is on the Z80 bus**, so FM writes hold the bus; and any part-I access breaks the address latch the V2D PCM store relies on, so `0x2A` is re-latched before the bus is released — deterministically, while the Z80 is stopped.
-
-An earlier design routed every chip write through a Z80-side command queue instead. It cost 10 cycles a sample forever (a permanent 6.5% tax on the pulse ceiling), produced a boot-race crash, and — found by A/B measurement after the rewrite — could leave a stale channel sounding underneath the music in envelope-heavy passages, which was audible on hardware as a persistent "something is too loud." Direct writes cannot be dropped or reordered, and deleting the queue deleted that class of bug.
 
 
 # Controls
@@ -204,7 +188,7 @@ MODE needs a 6-button pad. The on-screen readout shows which loop variant is run
 | file | what it is |
 |---|---|
 | `GeNESis-APU2PSG.c` | the ROM. Reads the shared RAM block, decides technique per voice per frame, drives the PSG |
-| `psgdac.h` | 68000 side of the driver: upload, patch operands, queue chip writes |
+| `psgdac.h` | 68000 side of the driver: upload, operand patching, loop-variant switching |
 | `z80_psgdac.s80` | the Z80 driver, and the source of truth for it |
 | `psgdac_z80.h` | assembled driver blob + patch offsets. Generated, checked in, no build step needed |
 | `tools/asmz80.py` | a tiny dependency-free Z80 assembler, so the blob can be regenerated with stock Python |
@@ -220,33 +204,33 @@ python3 tools/asmz80.py z80_psgdac.s80 -o psgdac_z80.h
 python3 tools/simz80.py
 ```
 
-`simz80.py` verifies the duty ratios, the attenuation encoding, the wave-table walk, that a disabled voice costs the same cycles as an enabled one, the loop lengths the sample rates are derived from, and the command queue — that triples are replayed in order, never more than one a sample, that the service slot switches itself back off when drained, and that pulse A's phase survives the detour. If you change the loop, the sample rates in `psgdac.h` and `DPCM_RATE` in the recorder change with it.
+`simz80.py` verifies the duty ratios, the attenuation encoding, the wave-table walk, that a disabled voice costs the same cycles as an enabled one, the loop lengths the sample rates are derived from, and that the PCM cursor stays inside its ring. Changing the loop changes the sample rates in `psgdac.h` and `DPCM_RATE` in the recorder with it.
 
 
 # Data format
 
-The recorder now writes `#GAPU2 v2` as a header line and appends four fields to each line. Fields 1..18 are unchanged, so old players still read new logs, and new players still read old logs. What v2 adds is what v1 could not say:
+The recorder writes `#GAPU2 v2` as a header line. Fields 1..18 are the v1 layout, so old players read new logs and new players read old logs. v2 appends eight fields:
 
-- **post-envelope volumes.** v1 logged the raw `$4000` nibble, which is the audible volume only when the constant-volume flag is set. Every envelope tail was wrong.
-- **the noise period index and mode.** v1 carried a three-way rate where the NES has sixteen in two modes.
-- **pulse 2's duty**, which v1 recorded and then never transmitted.
+- **post-envelope volumes** (fields 19–20). The raw `$4000` nibble is the audible volume only when the constant-volume flag is set; the envelope's decay level is not readable from the registers at all.
+- **DPCM enable and a frame counter** (fields 21–22).
+- **DMC trigger events** (fields 23–26): flag, `$4012`, `$4013`, and the `$4010` rate, latched at the `$4015` write rather than sampled at the frame boundary — a game can rewrite `$4012` right after triggering, so a frame-boundary read may name the next sample instead of the playing one.
 
-Two conversion bugs went with it. NES volume is linear 0..15 and PSG attenuation is logarithmic at 2 dB a step; the old `15 - v` treated one as the other, so NES volume 8 came out 14 dB down instead of 2.5 dB down. And `memory.readword(0x4002)` returns the period *plus* the length-counter bits from `$4003`; 8666 of the 8697 lines in the checked-in capture carry that pollution, and it was never masked off.
+Two caveats for anything consuming v1 fields directly: NES volume is linear 0..15 while PSG attenuation is logarithmic at 2 dB a step, so `15 − v` is not a level conversion; and `memory.readword(0x4002)` returns the period *plus* the length-counter bits from `$4003`, so period fields must be masked with `0x7FF`.
 
 
 # NOTES:
 
 - <s>Press 'z' on keyboard to toggle noise channel. i cant get it to rest silently.</s> Noise now rests when the stream says it rests; A is a manual mute on top of that.
-- <s>Alter the filepath in the scripts, to point to same dir, OR put nes_apu_data.txt, in same directory as Gens.exe.</s> The scripts now resolve `nes_apu_data.txt` next to *themselves*, so keeping all three in the repo folder just works — the checked-in capture included. A relative filename resolves against the emulator's working directory, not the script's, which is why "file not found" used to be the first thing a fresh clone printed. The old behaviour (file beside the emulator) still works as a fallback, and the error message now names both places it looked.
-- <s>During playback, the noise channel only, must be enabled by pressing A on the controller.</s> Fixed at the root: the blare came from an untouched v1 block decoding as attenuation 0, which the ROM now reads as silence. Noise boots enabled and the drums simply play; A is a mute.
+- <s>Alter the filepath in the scripts, to point to same dir, OR put nes_apu_data.txt, in same directory as Gens.exe.</s> The scripts resolve `nes_apu_data.txt` next to themselves; the emulator's working directory is a fallback.
+- <s>During playback, the noise channel only, must be enabled by pressing A on the controller.</s> An untouched v1 block reads as silence. Noise boots enabled; A is a mute.
 - A live synced version <s>exists,</s> is added.
 - <s>Gens r57shell may be hard to find. I downloaded it, and tried a couple days later from the same location, and the link was broken.  I'm working on a BizHawk version of the Gens lua.</s> Link is back.
-- <s>The shared block lives at a hardcoded `0xFF0000`, which is inside SGDK's own RAM area. It has always worked here, but it is luck, not design.</s> The luck ran out: SGDK put `task_pc` at `0xFF001A`, so zeroing the block each frame wiped the program counter the vblank handler returns through, and the ROM died with an illegal instruction at `0x70` — a jump into the vector table. The block is a linker-placed C object now, and the Lua scripts find it by scanning RAM for a `GAPU` magic whose `self` field points back at itself. Neither side hardcodes an address.
+- The shared block is a linker-placed C object; the Lua scripts find it by scanning RAM for a `GAPU` magic whose `self` field points back at itself. Neither side hardcodes an address.
 - Thank you to AlyJames, who helped elucidate the potential of pulse waves on the Genesis, for me, a random DM.
 
 # TODO:
 1. <s>Fix Triangle. Not playing correct note lengths.</s>
-2. <s>Complete mapping of 32 Noise sounds possible on NES.</s> Done — 14 of 16 periods, via tone-clocked noise; short mode reaches 15. <s>Evaluate sacrificing square3 for full frequency range.</s> Evaluated, then made moot: it used to cost the triangle, but with the triangle on FM channel 2 is free and it costs nothing.
+2. <s>Complete mapping of 32 Noise sounds possible on NES.</s> Done — 14 of 16 periods, via tone-clocked noise; short mode reaches 15. <s>Evaluate sacrificing square3 for full frequency range.</s> Moot — with the triangle on FM, channel 2 is free.
 
 3. Test timbre tricks and Genesis/MegaDrive FM synth integration.
       
@@ -254,11 +238,11 @@ Two conversion bugs went with it. NES volume is linear 0..15 and PSG attenuation
   
       - <s>DC Offset trick + Volume Modulation (VM) to produce pulse waves of various duty, and triangle, on PSG.</s> Done. This is the main solution.
       - 2 detuned PSG square waves can give us a pulse wave similar to what NES produces. <s>Can we get 3 to sound like 2?</s> No. Still worth trying as the *high-pitch* fallback, where the volume DAC runs out of sample rate and currently degrades to 50% — two phase-offset hardware squares keep some duty character at any pitch, at the cost of a second channel.
-      - FM synth DAC mode channel to play NES DPCM channel. Driver path and ring protocol are in; needs real testing.
-      - <s>Something better than the PSG for the Triangle.</s> Done — four FM operators in parallel, algorithm 7. Better than the volume DAC by 4 dB against the NES staircase, and it hands back both a Z80 voice and PSG channel 2.
+      - <s>FM synth DAC mode channel to play NES DPCM channel.</s> Done — YM2612 channel 6 DAC, streaming from 68000 RAM through the Z80 bank window.
+      - <s>Something better than the PSG for the Triangle.</s> Done — four FM operators in parallel, algorithm 7. Frees a Z80 voice and PSG channel 2.
       - <s>DC Offset trick on 1 FM synth channel using separated operators (Special FM Mode).</s> Not needed now — the PSG makes the duties directly.
       - <s>FM synth layered over 50% square, to color the waveform appropriately per whichever duty the NES is playing.</s> Superseded below the pitch ceiling. Still the best idea *above* it.
 
-4. <s>Test on real hardware.</s> Done, and it found real bugs simulation could not: a compiler generating 68020 instructions the 68000 doesn't have, a struct field landing on SGDK's saved return address, a record layout with a word at an odd address, the PSG's period-0 behaviour not being portable across chip revisions, and — the last one — YM2612 register writes racing the chip's busy flag, audible as the FM triangle playing at the wrong pitch with a harsh, square-ish timbre. All fixed; confirmed sounding right on hardware after each one. The YM2612 fix in particular matches SGDK's own `ym2612.c` write discipline exactly (busy-wait via port 0 only, a fixed delay between the address and data write, not a re-poll) — worth knowing if you ever bypass SGDK's audio driver to hit the chip directly yourself, on this project or elsewhere.
+4. <s>Test on real hardware.</s> Done.
 
 5.  Get the attention of Krikkz, so he might add this to his NES core on his Mega Everdrive PRO
