@@ -54,18 +54,40 @@
 // -----------------------------------------------------------------------------
 #define PSG_PORT_68K ((vu8*)0xC00011)
 
-static inline void psgWrite(u8 b) { *PSG_PORT_68K = b; }
+// Two masters write this chip: the Z80 streams attenuation bytes into it at
+// sample rate, and the 68000 writes everything register-rate.  Both reach the
+// same single port inside the VDP, so a 68000 byte written bare lands in the
+// middle of the Z80's stream -- and one byte lost there is lost for good,
+// because the change guards below will never send it again.  A dropped mute is
+// the worst of them: channel 2 goes on sounding its own square underneath the
+// noise it is clocking, for as long as the value does not change.
+//
+// So the frame's PSG bytes are collected here and emitted inside the bus window
+// the driver already takes once a frame, where the Z80 is stopped and nothing
+// can interleave.  One stall a frame, and every byte lands.
+#define PSGQ_MAX 32
+static u8 psgQ[PSGQ_MAX];
+static u8 psgQn = 0;
 
-// Tone periods only; must NOT be called while the bus is already held.
+static void psgWrite(u8 b) { if (psgQn < PSGQ_MAX) psgQ[psgQn++] = b; }
+
+// A tone period is a latch byte plus a data byte, and the data byte applies to
+// whatever the chip's register latch points at -- so the pair must not be split.
 static void psgTone(u8 ch, u16 period)
 {
-    Z80_requestBus(TRUE);
-    *PSG_PORT_68K = 0x80 | (ch << 5) | (period & 0x0F);
-    *PSG_PORT_68K = (period >> 4) & 0x3F;
-    Z80_releaseBus();
+    psgWrite(0x80 | (ch << 5) | (period & 0x0F));
+    psgWrite((period >> 4) & 0x3F);
 }
 
 static inline void psgAtten(u8 ch, u8 att) { psgWrite(0x90 | (ch << 5) | (att & 0x0F)); }
+
+// Call with the bus held.
+static void psgQueueFlush(void)
+{
+    u8 i;
+    for (i = 0; i < psgQn; i++) *PSG_PORT_68K = psgQ[i];
+    psgQn = 0;
+}
 
 // ---- direct access, valid only while the bus is held -----------------------
 static inline void psgDirect(u8 b) { *PSG_PORT_68K = b; }
@@ -973,9 +995,14 @@ static void synthUpdate(void)
             u16 p = white ? noisePeriodWhite[noisePeriodIdx]
                           : noisePeriodPeriodic[noisePeriodIdx];
             toneOut(2, p);
-            // Channel 2 still drives its own output while it clocks the noise,
-            // and at the low end of the table that tone is audible (period 508
-            // sits at 220 Hz). It has to be attenuated to silence explicitly.
+            // Channel 2 -- SQ3 -- still drives its own output while it clocks
+            // the noise, and at the low end of the table that tone is squarely
+            // audible: period 254 sits at 440 Hz. It has to be attenuated to
+            // silence explicitly, and the shadow is dropped first so the byte
+            // goes out every frame it is acting as a clock. One mute that never
+            // arrives is a square playing under every drum until the value
+            // happens to change, which is too long to leave to a guard.
+            lastAtten[2] = 0xFF;
             attenOut(2, 15);
             noiseOut(white, 3);
         }
@@ -1182,6 +1209,7 @@ int main(bool hardReset)
         // itself replays the commands one per sample once it resumes.
         Z80_requestBus(TRUE);
         PSGDAC_flush();
+        psgQueueFlush();
         Z80_releaseBus();
 
         clearApuBlock();
