@@ -15,7 +15,7 @@ The PSG's attenuator is a 4-bit logarithmic DAC. Park a tone channel's period at
   <img alt="Pitch map: the triangle sits on FM at any pitch; the volume DAC covers pulses below 3107 Hz in V2 and 1920 Hz in V3, above which each voice falls back to the PSG hardware tone generator." src="docs/crossover-light.png">
 </picture>
 
-*Which technique covers which pitch, per voice. Red is the volume DAC, blue is the PSG's own tone generator; the hatched zone is where the DAC is the only option. Interactive version: `technique-map.html`. Details below.*
+*Which technique covers which pitch, per voice. Red is the volume DAC, blue is the PSG's own tone generator; the hatched zone is where the DAC is the only option. Details below.*
 
 
 Requirements:
@@ -44,9 +44,7 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 
 # The technique map
 
-Four techniques, none of which covers the whole job. What follows is which one wins where, and why.
-
-The figures here and in `technique-map.html` are generated from the assembler's cycle counts and `nes_apu_data.txt`. Rebuild them from the repo root with `python3 tools/build_map.py technique-map.html`.
+Four techniques, none of which covers the whole job. What follows is which one wins where, and why. `technique-map.html` is a one-page summary.
 
 ### 1. Hardware tone generator
 The PSG's own square wave. Pitch-exact, costs nothing, works at any pitch the chip can reach. Two limits: it is 50% duty and only 50% duty, and its period register is 10 bits, so it bottoms out at **109 Hz**. The NES triangle goes down to 27 Hz. Below 109 Hz the hardware generator does not go flat, it simply cannot go there at all.
@@ -194,8 +192,7 @@ MODE needs a 6-button pad. The on-screen readout shows which loop variant is run
 | `tools/asmz80.py` | a tiny dependency-free Z80 assembler, so the blob can be regenerated with stock Python |
 | `tools/simz80.py` | runs the assembled driver on a toy Z80 and checks the waveforms it emits |
 | `tools/gen_apudata.py` | packs `nes_apu_data.txt` into `apudata.h`, the capture the ROM plays standalone |
-| `tools/build_map.py` | generates `technique-map.html` from the cycle counts and the capture. The PNGs in `docs/` are screenshots of its figures |
-| `technique-map.html` | the generated map, standalone. Open it in a browser, or read the hosted copy linked above |
+| `technique-map.html` | one-page summary of which technique covers which voice and pitch |
 
 To rebuild the driver after editing the assembly:
 
