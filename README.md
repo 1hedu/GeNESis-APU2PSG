@@ -1,3 +1,6 @@
+<img width="640" height="448" alt="rom-260824-200447" src="https://github.com/user-attachments/assets/e6f8faea-dbc2-4eb5-bdfa-c3f3e3a36be5" />
+
+
 # GeNESis-APU2PSG: Playback NES audio data on Genesis/Mega Drive
 
 This project is devoted to Krikkz, the inventor of EverDrive.  
