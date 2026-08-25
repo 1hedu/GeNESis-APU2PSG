@@ -89,6 +89,21 @@ if RECORD_DPCM and memory.registerwrite then
     end)
 end
 
+-- DMC trigger capture. Registers sampled once a frame can lie: a game may
+-- rewrite $4012 right after triggering, so the frame-boundary read would name
+-- the NEXT sample, not the one playing. Hook $4015 and latch address, length
+-- and rate at the trigger instant instead. tools/gen_dpcm.py reads these
+-- fields to know which samples to pull out of the .nes file.
+local trig = {0, 0, 0, 0}
+if memory.registerwrite then
+    memory.registerwrite(0x4015, 1, function(addr, size, value)
+        if value % 32 >= 16 then
+            trig = {1, memory.readbyte(0x4012), memory.readbyte(0x4013),
+                       memory.readbyte(0x4010) % 16}
+        end
+    end)
+end
+
 local function dpcmField()
     local n = #dpcmWrites
     local out = {}
@@ -173,6 +188,10 @@ emu.registerbefore(function()
     -- already in the v1 fields, it was just never read correctly.
     line = line .. string.format(",%d,%d,%d,%d",
         p1_vol, p2_vol, dpcm_on, frame % 256)
+
+    -- Fields 23..26: DMC trigger events, latched at the $4015 write.
+    line = line .. string.format(",%d,%d,%d,%d", trig[1], trig[2], trig[3], trig[4])
+    trig = {0, 0, 0, 0}
 
     if RECORD_DPCM then
         line = line .. "|" .. dpcmField()
