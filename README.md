@@ -30,6 +30,12 @@ Load a NES Rom file and the script will imediately start logging the audio data
 Both the Sega ROM and the lua script GeNESis-APU2PSG-Player must be loaded. 
 As long as the NES data file exists, in same directory as gens executable, it should playback the song using the PSG chip.
 
+`nes_apu_data.txt` is not distributed (it encodes the game's music). Recreate it from your own copy of the game:
+
+```
+python3 tools/gapu_map.py unpack nes_apu_data.gapumap game.nes -o nes_apu_data.txt
+```
+
 # To use the live synced version:
 Have to have both scripts running at the same time, in the same directory. Turn down the NES emulator audio in OS settings.
 
@@ -67,6 +73,7 @@ bus). `technique-map.html` is a one-page summary.
 | `tools/asmz80.py` | small Z80 assembler |
 | `tools/simz80.py` | runs the driver on a toy Z80 and checks its output |
 | `tools/gen_apudata.py` | packs `nes_apu_data.txt` into `apudata.h` for the cart |
+| `nes_apu_data.gapumap` | the capture, XOR-packed against the game ROM; `tools/gapu_map.py` unpacks it |
 | `technique-map.html` | one-page summary of which technique covers which voice and pitch |
 
 To rebuild the driver after editing the assembly:
