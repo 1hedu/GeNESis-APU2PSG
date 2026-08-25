@@ -1,0 +1,68 @@
+<title>APU2PSG Technique Map</title>
+<style>
+:root {
+  --bg: #fafaf7; --ink: #1e1e1c; --muted: #66665f; --line: #d9d8d0;
+  --dac: #c8322f; --hw: #2e6fb2;
+}
+:root:not([data-theme="light"]) { }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #171715; --ink: #e8e6e0; --muted: #98968d; --line: #3a3a35;
+    --dac: #e05a52; --hw: #6aa3d8;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #171715; --ink: #e8e6e0; --muted: #98968d; --line: #3a3a35;
+  --dac: #e05a52; --hw: #6aa3d8;
+}
+body {
+  background: var(--bg); color: var(--ink);
+  font: 15px/1.55 system-ui, sans-serif;
+  max-width: 40rem; margin: 0 auto; padding: 2.5rem 1.25rem 3rem;
+}
+h1 { font-size: 1.25rem; margin: 0 0 1.25rem; }
+dl { margin: 0 0 1.75rem; }
+dt { font-weight: 600; margin-top: .9rem; }
+dd { margin: .1rem 0 0; color: var(--muted); }
+dd b.dac { color: var(--dac); font-weight: 600; }
+dd b.hw { color: var(--hw); font-weight: 600; }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; font-variant-numeric: tabular-nums; white-space: nowrap; }
+th, td { text-align: left; padding: .3rem .9rem .3rem 0; border-bottom: 1px solid var(--line); }
+th { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+p.note { color: var(--muted); font-size: .85rem; margin-top: 1.5rem; }
+</style>
+
+<h1>APU2PSG Technique Map</h1>
+
+<dl>
+  <dt>Pulse 1 &amp; 2</dt>
+  <dd><b class="dac">Volume DAC</b> (true 12.5 / 25 / 75% duty) up to the loop's
+  pitch ceiling; above it, <b class="hw">PSG hardware tone</b> — pitch exact, duty 50%.</dd>
+
+  <dt>Triangle</dt>
+  <dd>YM2612 channel 5, algorithm 7, four carriers at MUL 1/3/5/7. Any pitch.
+  In PSG-only mode: <b class="dac">volume DAC</b> 27–480&nbsp;Hz,
+  <b class="hw">hardware tone</b> above.</dd>
+
+  <dt>Noise</dt>
+  <dd>PSG noise clocked from tone channel 2 (rate 3) — 14 of 16 NES periods;
+  short mode reaches 15.</dd>
+
+  <dt>DPCM</dt>
+  <dd>YM2612 channel 6 DAC, streamed from 68000 RAM through the Z80 bank window.</dd>
+</dl>
+
+<div class="tbl">
+<table>
+  <thead><tr><th>Loop</th><th>Voices</th><th>Cycles</th><th>Sample rate</th><th>12.5% ceiling</th></tr></thead>
+  <tbody>
+    <tr><td>V2</td><td>pulse + pulse</td><td>144</td><td>24858 Hz</td><td>3107 Hz</td></tr>
+    <tr><td>V2D</td><td>pulse + pulse + PCM</td><td>175</td><td>20455 Hz</td><td>2557 Hz</td></tr>
+    <tr><td>V3</td><td>pulse + pulse + triangle</td><td>233</td><td>15363 Hz</td><td>1920 Hz</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p class="note">Sample rate is loop length: each DAC voice added lengthens the Z80 loop
+and lowers every voice's pitch ceiling. The PSG hardware tone bottoms out at 109&nbsp;Hz.</p>

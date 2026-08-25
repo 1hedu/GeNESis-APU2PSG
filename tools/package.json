@@ -1,0 +1,8 @@
+{
+  "name": "genesis-apu2psg-capture-tools",
+  "private": true,
+  "description": "Node dependency for tools/gen_apu_capture.js -- regenerates nes_apu_data.txt from a user's own NES ROM instead of shipping the capture.",
+  "dependencies": {
+    "jsnes": "^1.2.1"
+  }
+}
