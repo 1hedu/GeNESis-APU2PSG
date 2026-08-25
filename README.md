@@ -32,18 +32,6 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 - Thank you to AlyJames, who helped elucidate the potential of pulse waves on the Genesis, for me, a random DM.
 
 # TODO:
-1. <s>Fix Triangle. Not playing correct note lengths.</s>
-2. Complete mapping of 32 Noise sounds possible on NES. FM Synth to help if applicable, by layering with noise channel. Evaluate sacrificing square3 for full frequency range.
-
-3. Test timbre tricks and Genesis/MegaDrive FM synth integration.
-      
-      Some possibilities:
-  
-      - DC Offset trick + Volume Modulation (VM) to produce pulse waves of various duty, and triangle, on PSG.
-      - 2 detuned PSG square waves can give us a pulse wave similar to what NES produces. <s>Can we get 3 to sound like 2?</s> No.
-      - FM synth DAC mode channel to play NES DPCM channel.
-      - DC Offset trick on 1 FM synth channel using separated operators (Special FM Mode). If DC Offset can be achieved on FM, iI'm not sure. It works on PSG.
-      - FM synth layered over 50% square, to color the waveform appropriately per whichever duty the NES is playing.  (IE 50% square + some FM = 12.5% pulse or 25% or 75%).  This sounds pretty close in most cases.
 
 
-4.  Get the attention of Krikkz, so he might add this to his NES core on his Mega Everdrive PRO
+6.  Get the attention of Krikkz, so he might add this to his NES core on his Mega Everdrive PRO
