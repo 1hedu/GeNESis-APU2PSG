@@ -182,7 +182,7 @@ An earlier design routed every chip write through a Z80-side command queue inste
 | C | play the embedded test drum through the DPCM path: the Z80's V2D loop streams it from 68000 RAM into the YM2612 DAC |
 | START | cycle synthesis mode: **HW** (everything on hardware tone generators) → **DAC** (volume-DAC pulses and triangle) → **DAC+NOISE** (also tone-clocked noise, which costs the triangle) → **FM TRI** (triangle to FM, so nothing is contested — the default) |
 | X / Y / Z | mute pulse 1 / pulse 2 / triangle |
-| A | mute noise (starts muted) |
+| A | mute noise |
 | MODE | manual noise audition: step all 16 periods by hand |
 | B / C, LEFT / RIGHT | in manual noise: previous / next NES noise period |
 | UP / DOWN | trim the FM triangle's level live (shown on the TR line) |
@@ -230,7 +230,7 @@ Two conversion bugs went with it. NES volume is linear 0..15 and PSG attenuation
 
 - <s>Press 'z' on keyboard to toggle noise channel. i cant get it to rest silently.</s> Noise now rests when the stream says it rests; A is a manual mute on top of that.
 - <s>Alter the filepath in the scripts, to point to same dir, OR put nes_apu_data.txt, in same directory as Gens.exe.</s> The scripts now resolve `nes_apu_data.txt` next to *themselves*, so keeping all three in the repo folder just works — the checked-in capture included. A relative filename resolves against the emulator's working directory, not the script's, which is why "file not found" used to be the first thing a fresh clone printed. The old behaviour (file beside the emulator) still works as a fallback, and the error message now names both places it looked.
-- <s>During playback, the noise channel only, must be enabled by pressing A on the controller.</s> Still true, and still for the same reason: with no Lua feeding it, an enabled noise channel just blares.
+- <s>During playback, the noise channel only, must be enabled by pressing A on the controller.</s> Fixed at the root: the blare came from an untouched v1 block decoding as attenuation 0, which the ROM now reads as silence. Noise boots enabled and the drums simply play; A is a mute.
 - A live synced version <s>exists,</s> is added.
 - <s>Gens r57shell may be hard to find. I downloaded it, and tried a couple days later from the same location, and the link was broken.  I'm working on a BizHawk version of the Gens lua.</s> Link is back.
 - <s>The shared block lives at a hardcoded `0xFF0000`, which is inside SGDK's own RAM area. It has always worked here, but it is luck, not design.</s> The luck ran out: SGDK put `task_pc` at `0xFF001A`, so zeroing the block each frame wiped the program counter the vblank handler returns through, and the ROM died with an illegal instruction at `0x70` — a jump into the vector table. The block is a linker-placed C object now, and the Lua scripts find it by scanning RAM for a `GAPU` magic whose `self` field points back at itself. Neither side hardcodes an address.

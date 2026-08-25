@@ -246,9 +246,10 @@ static u16 uiTick   = 0;
 // -----------------------------------------------------------------------------
 void joyEvent(u16 joy, u16 changed, u16 state) {}
 
-// X / Y / Z / A mute a voice.  Noise starts muted, as it always has: with no Lua
-// feeding it, an enabled noise channel just blares.
-static u8 chanEnable[4] = {1, 1, 1, 0};
+// X / Y / Z / A mute a voice. Noise now boots ENABLED: the historical blare it
+// guarded against came from an untouched v1 block decoding as attenuation 0,
+// which readApuBlock now treats as silence. The cart song's drums play at boot.
+static u8 chanEnable[4] = {1, 1, 1, 1};
 static u16 prevButtons = 0;
 static bool manualNoiseControl = FALSE;
 
@@ -497,7 +498,11 @@ static void readApuBlock(void)
         noiseMode = ((APU_LEGACY[6] >> 2) & 1) ? 0 : 1;
         noisePeriodIdx = 6;                     // v1 only carried a coarse rate
         noiseVol = 15 - (APU_LEGACY[7] & 0x0F);
-        noiseOn = APU_LEGACY[7] != 15;
+        // A real v1 script always writes a nonzero noise control byte (0xE0|..),
+        // so zero means nobody is feeding the block. Without this test, an
+        // untouched block decodes as attenuation 0 -- the full-volume noise
+        // blare that once forced noise to boot muted behind the A button.
+        noiseOn = (APU_LEGACY[6] != 0) && ((APU_LEGACY[7] & 0x0F) != 15);
         dpcmOn = 0;
         nesFrame = APU_LEGACY[9];
     }
