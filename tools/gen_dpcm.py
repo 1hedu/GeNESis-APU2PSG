@@ -101,6 +101,31 @@ def emit(path, entries, note):
 def main():
     out = sys.argv[sys.argv.index("-o") + 1] if "-o" in sys.argv else "dpcmbank.h"
 
+    if "--pick" in sys.argv:
+        # Extract one specific (addr, len, rate) triple found by other means --
+        # typically a static scan of the game's code for the LDA#/STA $4012
+        # idiom (or, as here, a table-driven trigger the scan can't decode on
+        # its own: many commercial games index a shared trigger routine by a
+        # per-effect table rather than hardcoding each sample inline).
+        i = sys.argv.index("--pick")
+        nes, addr, length, rate = sys.argv[i+1], int(sys.argv[i+2]), int(sys.argv[i+3]), int(sys.argv[i+4])
+        rom = open(nes, "rb").read()
+        prg_start = 16 + (512 if rom[6] & 4 else 0)
+        prg_data = rom[prg_start:prg_start + rom[4] * 16384]
+        prg_size = len(prg_data)
+        def dmc_addr_to_offset(cpu):
+            if prg_size <= 16384: return (cpu - 0xC000) % prg_size
+            return (prg_size - 16384) + (cpu - 0xC000)
+        cpu = 0xC000 + addr * 64
+        off = dmc_addr_to_offset(cpu)
+        raw = prg_data[off:off + length * 16 + 1]
+        dec, bit_rate = dmc_decode(raw, rate)
+        pcm = resample(dec, bit_rate)
+        print("picked addr=%d len=%d rate=%d: %d DMC bytes -> %d PCM bytes"
+              % (addr, length, rate, len(raw), len(pcm)))
+        emit(out, [(None, rate, pcm)], "picked from %s, addr=%d len=%d rate=%d" % (nes, addr, length, rate))
+        return
+
     if "--selftest" in sys.argv:
         src = kick()
         rate_idx = 15                               # 33.1 kHz, the DMC's finest
