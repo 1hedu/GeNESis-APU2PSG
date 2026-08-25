@@ -3,12 +3,15 @@
 gen_apudata.py - pack nes_apu_data.txt into a C header so the ROM can play the
 capture with no emulator scripting at all.
 
-10 bytes a frame, big-endian:
+10 bytes a frame, big-endian. Every 16-bit field sits at an EVEN offset: the
+compiler folds (p[n]<<8)|p[n+1] into a native word load on the big-endian
+68000, and a word load at an odd address is a hardware address error. (Found
+the hard way: the first layout put pulse 2's word at offset 3.)
   [0..1]  pulse1: period(11) | duty<<11 | on<<13
-  [2]     pulse1 volume (raw register nibble, same as the v1 script path)
-  [3..4]  pulse2: same layout
-  [5]     pulse2 volume
-  [6..7]  triangle: period(11) | on<<11
+  [2..3]  pulse2: same layout
+  [4..5]  triangle: period(11) | on<<11
+  [6]     pulse1 volume (raw register nibble, same as the v1 script path)
+  [7]     pulse2 volume
   [8]     noise: period(4) | mode<<4 | on<<5
   [9]     noise volume
 
@@ -35,9 +38,10 @@ for line in open(src):
     # v2 captures carry post-envelope volumes in fields 19/20; use them if there
     p1v = (f[18] if len(f) >= 22 else f[1]) & 0x0F
     p2v = (f[19] if len(f) >= 22 else f[5]) & 0x0F
-    frames.append(bytes([p1 >> 8, p1 & 0xFF, p1v,
-                         p2 >> 8, p2 & 0xFF, p2v,
+    frames.append(bytes([p1 >> 8, p1 & 0xFF,
+                         p2 >> 8, p2 & 0xFF,
                          tri >> 8, tri & 0xFF,
+                         p1v, p2v,
                          noi, f[11] & 0x0F]))
 
 blob = b"".join(frames)

@@ -88,6 +88,19 @@ P1   736 Hz d0 v11 DAC
 Anything showing `Selected CH1` and `P1: 1234 N, V: 4, D: 0` is the pre-2026
 build, which predates all of the volume-DAC work.
 
+## Headless testing against a real emulator core
+
+`tools/lrhost.c` is a minimal libretro host: it loads an emulator core (.so),
+runs the ROM for N frames with no window, reports per-frame audio energy, and
+dumps chosen frames as PPM images so the on-screen overlay can be read from a
+capture. This is how the pulse-2 misread was reproduced and verified fixed
+against the same PicoDrive core the bug was reported on.
+
+```
+gcc -O2 -o lrhost tools/lrhost.c -ldl
+./lrhost picodrive_libretro.so rom.bin 600 300 590   # 600 frames, dump 300 & 590
+```
+
 ## Rebuilding the Z80 driver
 
 Only needed if you edit `z80_psgdac.s80`:

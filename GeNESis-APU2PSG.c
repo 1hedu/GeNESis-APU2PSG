@@ -464,16 +464,21 @@ static void readCartFrame(void)
 
     u16 w;
 
+    // Every 16-bit field lies at an even offset by design: the compiler folds
+    // these byte pairs into native word loads, and the 68000 traps a word load
+    // at an odd address. The first record layout had pulse 2's word at offset
+    // 3 -- an address error on hardware, silent garbage on lenient emulators.
     w = (p[0] << 8) | p[1];
     p1Period = w & 0x7FF; p1Duty = (w >> 11) & 3; p1On = (w >> 13) & 1;
-    p1Vol = p[2] & 0x0F;
 
-    w = (p[3] << 8) | p[4];
+    w = (p[2] << 8) | p[3];
     p2Period = w & 0x7FF; p2Duty = (w >> 11) & 3; p2On = (w >> 13) & 1;
-    p2Vol = p[5] & 0x0F;
 
-    w = (p[6] << 8) | p[7];
+    w = (p[4] << 8) | p[5];
     triPeriod = w & 0x7FF; triOn = (w >> 11) & 1;
+
+    p1Vol = p[6] & 0x0F;
+    p2Vol = p[7] & 0x0F;
 
     if (!manualNoiseControl)
     {
