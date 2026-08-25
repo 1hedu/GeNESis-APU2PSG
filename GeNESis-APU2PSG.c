@@ -55,16 +55,25 @@
 #define PSG_PORT_68K ((vu8*)0xC00011)
 
 // Two masters write this chip: the Z80 streams attenuation bytes into it at
-// sample rate, and the 68000 writes everything register-rate.  Both reach the
-// same single port inside the VDP, so a 68000 byte written bare lands in the
-// middle of the Z80's stream -- and one byte lost there is lost for good,
-// because the change guards below will never send it again.  A dropped mute is
-// the worst of them: channel 2 goes on sounding its own square underneath the
-// noise it is clocking, for as long as the value does not change.
+// sample rate, and the 68000 writes everything register-rate.  A 68000 byte
+// written bare goes out while the Z80 is still running -- so if it addresses a
+// channel the Z80 is currently driving, the Z80's next sample overwrites it
+// microseconds later.  The change guards below then make that permanent: the
+// value is recorded as sent, so it is never written again.
+//
+// That is not hypothetical.  Handing a channel back from the Z80 to the 68000
+// is exactly this case, and the worst of them is channel 2 -- SQ3 -- when noise
+// starts clocking from it: the wave voice is still driving SQ3's attenuator
+// when the mute goes out, the mute is overwritten, and the loop variant only
+// drops the wave voice at the end of the frame.  SQ3 is left at whatever
+// attenuation the last staircase sample wrote, sounding a square at the noise
+// clock rate under every drum from then on.  Measured against the build before
+// this change: a 1776 Hz tone at 536x the noise floor, with its odd harmonics.
 //
 // So the frame's PSG bytes are collected here and emitted inside the bus window
-// the driver already takes once a frame, where the Z80 is stopped and nothing
-// can interleave.  One stall a frame, and every byte lands.
+// the driver already takes once a frame -- after PSGDAC_flush has retargeted
+// the loop, with the Z80 stopped, so a handoff completes in the right order and
+// nothing can overwrite it.  One stall a frame, and every byte lands.
 #define PSGQ_MAX 32
 static u8 psgQ[PSGQ_MAX];
 static u8 psgQn = 0;
@@ -1207,6 +1216,9 @@ int main(bool hardReset)
         // the frame's queued chip writes into the Z80's queue page. Plain byte
         // stores, no waits -- the stall is a few microseconds, and the Z80
         // itself replays the commands one per sample once it resumes.
+        // Order matters: PSGDAC_flush retargets the Z80's voices first, so a
+        // channel it is giving up is already detached when the PSG bytes below
+        // set that channel's own registers.
         Z80_requestBus(TRUE);
         PSGDAC_flush();
         psgQueueFlush();
