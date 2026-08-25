@@ -125,31 +125,66 @@ def main():
     else:
         prg_data = rom
 
-    used = {}
+    # The DMC's CPU address window is hardware-fixed at $C000-$FFFF (256 addr
+    # steps * 64 = exactly 16 KB). For any mapper that switches banks only at
+    # $8000-$BFFF -- NROM, UNROM/mapper 2, CNROM/mapper 3, and most others --
+    # that window is wired to the LAST 16 KB bank of the PRG image specifically
+    # so a DMC sample stays reachable no matter which bank is switched in. This
+    # also degenerates correctly for plain 16/32 KB NROM, where there is no
+    # switching at all: the "last bank" is just the tail of the one contiguous
+    # image. It does NOT hold for a mapper that can move what's fixed at $C000
+    # (some MMC1/MMC3 configurations) -- those need per-game bank tracking this
+    # tool does not attempt.
+    prg_size = len(prg_data)
+    def dmc_addr_to_offset(cpu):
+        if prg_size <= 16384:
+            return (cpu - 0xC000) % prg_size
+        return (prg_size - 16384) + (cpu - 0xC000)
+
+    from collections import Counter
+    hits = Counter()
+    trig = {}
     for line in open(cap):
         f = line.strip().split("|")[0].split(",")
         if len(f) < 26 or not f[0].lstrip("-").isdigit():
             continue
         v = [int(x) for x in f]
         if v[22]:                                   # dpcm trigger this frame
-            used[(v[23], v[24])] = v[25] & 15       # (addr, len) -> rate
-    if not used:
+            key = (v[23], v[24])
+            hits[key] += 1
+            trig[key] = v[25] & 15
+    if not hits:
         # fall back: frames where the channel is enabled, using the sampled regs
         for line in open(cap):
             f = line.strip().split("|")[0].split(",")
             if len(f) < 22: continue
             v = [int(x) for x in f]
             if len(v) >= 22 and v[20]:
-                used[(v[16], v[17])] = v[15] & 15
-    entries = []
-    for (a, l), r in sorted(used.items()):
-        cpu = 0xC000 + a * 64
-        off = (cpu - 0x8000) % len(prg_data) if len(prg_data) <= 0x8000 else cpu - 0x8000
-        raw = prg_data[off:off + l * 16 + 1]
-        dec, bit_rate = dmc_decode(raw, r)
-        entries.append(((a, l), r, resample(dec, bit_rate)))
-        print("sample addr=%d len=%d rate=%d: %d bytes -> %d PCM" % (a, l, r, len(raw), len(entries[-1][2])))
-    emit(out, entries, "extracted from %s" % nes)
+                key = (v[16], v[17])
+                hits[key] += 1
+                trig[key] = v[15] & 15
+    if not hits:
+        print("no DPCM triggers found in %s" % cap)
+        return
+
+    print("distinct DMC triggers seen:")
+    for key, n in hits.most_common():
+        print("  addr=%d len=%d rate=%d : %d frames" % (key[0], key[1], trig[key], n))
+
+    # The ROM only knows how to play one embedded sample (the C-button test
+    # slot). Pick the most-triggered one -- almost always the recurring SFX
+    # (footstep, hit, pickup) rather than a one-off -- and emit it in that
+    # same pcmTest format the ROM already consumes, no ROM change needed.
+    (a, l), n = hits.most_common(1)[0]
+    r = trig[(a, l)]
+    cpu = 0xC000 + a * 64
+    off = dmc_addr_to_offset(cpu)
+    raw = prg_data[off:off + l * 16 + 1]
+    dec, bit_rate = dmc_decode(raw, r)
+    pcm = resample(dec, bit_rate)
+    print("selected addr=%d len=%d rate=%d (%d frames): %d DMC bytes -> %d PCM bytes"
+          % (a, l, r, n, len(raw), len(pcm)))
+    emit(out, [(None, r, pcm)], "extracted from %s, addr=%d len=%d rate=%d" % (nes, a, l, r))
 
 
 def resample7(pcm, src, dst):
