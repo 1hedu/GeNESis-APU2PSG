@@ -57,9 +57,11 @@ The figures here and in **[the crossover map](https://claude.ai/code/artifact/09
 The PSG's own square wave. Pitch-exact, costs nothing, works at any pitch the chip can reach. Two limits: it is 50% duty and only 50% duty, and its period register is 10 bits, so it bottoms out at **109 Hz**. The NES triangle goes down to 27 Hz. Below 109 Hz the hardware generator does not go flat, it simply cannot go there at all.
 
 ### 2. Volume DAC  *(the main solution)*
-Park the tone period at 0 and rewrite the channel's attenuation register from a free-running Z80 loop.
+Park the tone period at **1** — the classic SMS PCM trick — and rewrite the channel's attenuation register from a free-running Z80 loop.
 
-The Sega PSG takes a period of 0 literally, where a discrete SN76489 would substitute 0x400 — so the channel toggles every internal clock, giving a 112 kHz square that the output filter averages to *half* the attenuator's level. That halved level is what the volume DAC modulates, which makes the trick Sega-specific and makes a DAC voice exactly 6 dB quieter than the same channel making a tone: its fundamental is (2/π)(V/2) against a hardware square's (2/π)V. Hardware-path voices therefore carry +3 attenuation steps, or a pulse would jump 6 dB louder the moment it crossed the pitch ceiling. The attenuator is logarithmic, which turns out to be a gift: scaling a waveform by a volume is *addition* in the log domain, so a whole pulse voice is eight instructions with no wavetable at all —
+Period 1 gives a 55.9 kHz carrier: ultrasonic on hardware, averaged by the output stage to *half* the attenuator's level. That halved level is what the volume DAC modulates, and it makes a DAC voice exactly 6 dB quieter than the same channel making a tone — its fundamental is (2/π)(V/2) against a hardware square's (2/π)V — so hardware-path voices carry +3 attenuation steps to match.
+
+Why not period 0? Because its behaviour is not portable: MAME-lineage emulators toggle it at 112 kHz (same mean as period 1), but older emulators and some real silicon substitute 0x400 — an **audible 109 Hz square** underneath every DAC voice. An earlier build parked at 0 and sounded fine in PicoDrive while real hardware and Gens r57shell both played a low buzz that wasn't in the score. Period 1 behaves identically everywhere. The attenuator is logarithmic, which turns out to be a gift: scaling a waveform by a volume is *addition* in the log domain, so a whole pulse voice is eight instructions with no wavetable at all —
 
 ```
         ld de,DELTA         ; phase += delta

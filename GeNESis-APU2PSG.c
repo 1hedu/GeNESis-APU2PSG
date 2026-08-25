@@ -8,7 +8,8 @@
 //
 //   1. HARDWARE TONE   -- the PSG's own square generator.  Pitch-exact from
 //                         109 Hz up, free, but 50% duty and nothing else.
-//   2. VOLUME DAC      -- park a channel's period at 0 so it outputs DC, then
+//   2. VOLUME DAC      -- park a channel's period at 1 (a 55.9 kHz carrier the
+//                         output stage averages away), then
 //                         rewrite its 4-bit logarithmic attenuator thousands of
 //                         times a second.  Gives real 12.5/25/75% duty and a
 //                         real triangle staircase, and reaches below the PSG's
@@ -678,7 +679,15 @@ static void synthUpdate(void)
         {
             u16 delta = (u16)(kPulse / (period + 1));
             PSGDAC_setPulse(i, delta, dutyThreshold[duty], att, 1);
-            toneOut(i, 0);                  // period 0 -> DC, the DAC does the rest
+            // Park at period 1, NOT 0: the classic SMS PCM trick. Period 1 is a
+            // 55.9 kHz carrier -- ultrasonic on hardware, mean level V/2, and it
+            // behaves identically on every chip revision and emulator. Period 0
+            // does not: MAME-lineage cores toggle it at 112 kHz (same mean),
+            // but older cores and some real silicon substitute 0x400, which is
+            // an AUDIBLE 109 Hz square underneath every DAC voice. Hardware and
+            // Gens r57shell agreed with each other and against PicoDrive here,
+            // which is what betrayed it.
+            toneOut(i, 1);
             lastAtten[i] = 0xFF;            // the Z80 owns this attenuator now
         }
         else
@@ -720,7 +729,7 @@ static void synthUpdate(void)
     else if (variant == PSGDAC_V3)
     {
         PSGDAC_setWave((u16)(kTri / (triPeriod + 1)), 1);
-        toneOut(2, 0);
+        toneOut(2, 1);                      // period 1, same reason as the pulses
         lastAtten[2] = 0xFF;                // wave table drives the attenuator
         triSource = TRI_DAC;
     }
