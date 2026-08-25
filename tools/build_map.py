@@ -7,11 +7,11 @@ NES = 1789773.0
 PSGCLK = 3579545.0
 
 # ---- driver facts, straight from the assembler ------------------------------
-VOICE_CYCLES = {"pulse": 63, "wave": 89, "pcm": 31, "overhead": 18, "service": 10}
+VOICE_CYCLES = {"pulse": 63, "wave": 89, "pcm": 31, "overhead": 18}
 VARIANTS = [
-    ("V3",  "pulse + pulse + triangle",  ["pulse", "pulse", "wave", "overhead", "service"]),
-    ("V2",  "pulse + pulse",             ["pulse", "pulse", "overhead", "service"]),
-    ("V2D", "pulse + pulse + PCM",       ["pulse", "pulse", "pcm", "overhead", "service"]),
+    ("V3",  "pulse + pulse + triangle",  ["pulse", "pulse", "wave", "overhead"]),
+    ("V2",  "pulse + pulse",             ["pulse", "pulse", "overhead"]),
+    ("V2D", "pulse + pulse + PCM",       ["pulse", "pulse", "pcm", "overhead"]),
 ]
 def rate(cyc): return PSGCLK / cyc
 def total(parts): return sum(VOICE_CYCLES[p] for p in parts)
@@ -182,9 +182,8 @@ BPLOT = BW - BPAD_L - BPAD_R
 MAXC = 260
 BAR_H, BAR_GAP = 40, 22
 PARTLABEL = {"pulse": "pulse voice", "wave": "wave voice", "pcm": "PCM voice",
-             "overhead": "loop overhead", "service": "service slot: one jump, so that one writer owns every chip"}
-PARTCLS = {"pulse": "s-dac", "wave": "s-dac s-wave", "pcm": "s-pcm",
-           "overhead": "s-over", "service": "s-noise"}
+             "overhead": "loop overhead"}
+PARTCLS = {"pulse": "s-dac", "wave": "s-dac s-wave", "pcm": "s-pcm", "overhead": "s-over"}
 
 f2, y = [], 0
 for name, desc, parts in VARIANTS:
@@ -570,9 +569,9 @@ footer { border-top: 1px solid var(--rule); padding-top: 22px; color: var(--ink-
     <figcaption>Z80 cycles per sample at 3.579545&nbsp;MHz. A pulse voice is 63 cycles because the
     attenuator is logarithmic, which makes volume scaling an <span class="m">add</span> and lets a whole
     pulse fit in eight instructions with no wavetable. The triangle needs a real 32-step table, so it
-    costs 89. The 10-cycle service slot is one jump, and it is what lets the Z80 own every sound chip
-    write on the machine: the 68000 queues (address, data) pairs and the loop replays one a sample,
-    so it never has to stop the audio to reach a register.</figcaption>
+    costs 89. The Z80 does only this sample-rate work; everything register-rate is written by the
+    68000 directly &mdash; the PSG lives in the VDP, not on the Z80 bus, so those writes cost the
+    loop nothing.</figcaption>
     <details>
       <summary>Table view</summary>
       <div class="tbl"><table>

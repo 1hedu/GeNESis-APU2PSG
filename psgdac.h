@@ -1,21 +1,13 @@
 // =============================================================================
 // psgdac.h -- 68000 side of the PSG volume-DAC synthesis driver.
 //
-// The Z80 half (z80_psgdac.s80) free-runs a fixed-length loop that rewrites PSG
-// attenuation registers thousands of times a second, and it owns every sound
-// chip write on the machine -- PSG and YM2612 alike.  The 68000 never touches a
-// chip register after boot.  It posts (address, data) triples into a queue in
-// Z80 RAM and the loop replays one per sample.
-//
-// That division exists because the 68000 cannot reach a sound chip without
-// holding the Z80 bus, and holding the Z80 bus stops the loop, which stops the
-// audio.  With one writer there is also no way for a PSG tone period's latch
-// and data bytes to be split by someone else's write, and no way for the
-// YM2612's part-I address latch -- parked on 2Ah so PCM costs one store a
-// sample -- to be clobbered out from under the DAC.
-//
-// What the 68000 still does inside a bus window is patch the loop's immediate
-// operands and append to the queue.  Plain byte stores, no waits.
+// The Z80 half (z80_psgdac.s80) free-runs a fixed-length loop doing only the
+// sample-rate work: DAC pulse voices, the V3 wave voice, and PCM streaming.
+// The 68000 writes everything register-rate itself -- the PSG directly at
+// 0xC00011 (it is in the VDP, not on the Z80 bus), the YM2612 under a short
+// bus hold.  What this file manages is the loop itself: uploading it, patching
+// its immediate operands once a frame with the bus held, and switching which
+// loop body runs by re-pointing the tail jumps.
 // =============================================================================
 
 #ifndef _PSGDAC_H_
@@ -38,33 +30,22 @@
 // Z80-side addresses the driver was assembled with.
 #define Z80_DUMMY       0x0204          // 13-cycle store that goes nowhere
 #define Z80_DPCMPAGE    0x0205          // page the PCM reader is in (driver-owned)
-#define Z80_QPTR        0x0206          // queue read cursor (driver-owned)
-#define Z80_QEND        0x0208          // queue write cursor (68000-owned)
-#define Z80_QBASE       0x0300          // 256-byte queue page: 85 triples
 #define Z80_WAVE        0x0400          // 256-byte wave table, page-aligned
 #define Z80_PSG_PORT    0x7F11
-#define Z80_YM_ADDR1    0x4000          // YM2612 part I  (channels 1-3, and 0x28)
-#define Z80_YM_DATA1    0x4001
-#define Z80_YM_ADDR2    0x4002          // YM2612 part II (channels 4-6)
-#define Z80_YM_DATA2    0x4003
+#define Z80_YM_DATA1    0x4001          // YM2612 part I data: the PCM store target
 #define Z80_MEM(a)      ((vu8*)(0xA00000 + (a)))   // SGDK owns the name Z80_RAM
 
-// Loop lengths, straight out of the assembler: the variant body plus the one
-// jump through the service slot that every sample pays.
-#define CYC_V3  (CYCLES_v3  + CYCLES_svcslot)
-#define CYC_V2  (CYCLES_v2  + CYCLES_svcslot)
-#define CYC_V2D (CYCLES_v2d + CYCLES_svcslot)
-
-static const u16 psgdacCycles[PSGDAC_NVARIANT] = {CYC_V3, CYC_V2, CYC_V2D};
-static const u16 psgdacRate[PSGDAC_NVARIANT]   = {14731, 23244, 19349};
+// Loop lengths, straight out of the assembler.
+static const u16 psgdacCycles[PSGDAC_NVARIANT] = {CYCLES_v3, CYCLES_v2, CYCLES_v2d};
+static const u16 psgdacRate[PSGDAC_NVARIANT]   = {15363, 24858, 20455};
 
 // delta = K / (nesPeriod + 1).  K = nesClock * 65536 / (divider * sampleRate).
-static const u32 psgdacKPulse[PSGDAC_NVARIANT]    = {497664, 315392, 378880};
-static const u32 psgdacKTriangle[PSGDAC_NVARIANT] = {248832, 157696, 189440};
+static const u32 psgdacKPulse[PSGDAC_NVARIANT]    = {477184, 294912, 358400};
+static const u32 psgdacKTriangle[PSGDAC_NVARIANT] = {238592, 147456, 179200};
 
 // Highest fundamental worth handing to a DAC voice: below this a 12.5% pulse
 // still gets its 8 slots per period.  Above it the hardware tone generator wins.
-static const u16 psgdacCeiling[PSGDAC_NVARIANT] = {14731 / 8, 23244 / 8, 19349 / 8};
+static const u16 psgdacCeiling[PSGDAC_NVARIANT] = {15363 / 8, 24858 / 8, 20455 / 8};
 
 // ---- patch point tables ----------------------------------------------------
 // Every patch label names an instruction; its operand starts one byte later.
@@ -85,6 +66,10 @@ static const u16 pchOut[2][PSGDAC_NVARIANT] = {
     {P_v3_b_out + 1, P_v2_b_out + 1, P_v2d_b_out + 1},
 };
 static const u16 psgdacEntry[PSGDAC_NVARIANT] = {L_v3, L_v2, L_v2d};
+// Every loop body's tail jump, plus V2D's out-of-line page-wrap tail.  All are
+// re-pointed together on a variant switch, with the bus held, so it does not
+// matter which body the stopped Z80 happens to be inside.
+static const u16 pchNext[4] = {P_v3_next + 1, P_v2_next + 1, P_v2d_next + 1, P_v2d_wrapnext + 1};
 
 // ---- shadow state ----------------------------------------------------------
 typedef struct {
@@ -101,37 +86,7 @@ static u8 psgdacSentVar  = 0xFF;
 static u8 psgdacDpcmOn   = 0;
 static u8 psgdacDpcmSent = 0xFF;
 static u8 psgdacReady    = 0;
-static u8 psgdacQEnd     = 0;           // our shadow of the Z80's queue tail
 static u8 psgdacDpcmPage = 0;           // reader's current ring page, from the flush
-
-// ---- the command queue -----------------------------------------------------
-// Built up over the frame in 68000 RAM, then copied into the Z80's queue page
-// in one burst inside the bus window.
-#define PSGDAC_CMD_MAX  48
-
-static u16 cmdAddr[PSGDAC_CMD_MAX];
-static u8  cmdData[PSGDAC_CMD_MAX];
-static u8  cmdCount = 0;
-static u8  cmdDropped = 0;
-
-static inline void PSGDAC_cmd(u16 addr, u8 data)
-{
-    if (cmdCount >= PSGDAC_CMD_MAX) { cmdDropped = 1; return; }
-    cmdAddr[cmdCount] = addr;
-    cmdData[cmdCount] = data;
-    cmdCount++;
-}
-
-// A YM2612 register is an address write then a data write. They land one sample
-// apart, which is far longer than the chip's busy flag lasts, so there is no
-// wait to do -- the queue's own pacing is the wait.
-static inline void PSGDAC_ym(u8 part, u8 reg, u8 val)
-{
-    if (part) { PSGDAC_cmd(Z80_YM_ADDR2, reg); PSGDAC_cmd(Z80_YM_DATA2, val); }
-    else      { PSGDAC_cmd(Z80_YM_ADDR1, reg); PSGDAC_cmd(Z80_YM_DATA1, val); }
-}
-
-static inline void PSGDAC_psg(u8 byte) { PSGDAC_cmd(Z80_PSG_PORT, byte); }
 
 static inline void z80w8(u16 addr, u8 v)   { *Z80_MEM(addr) = v; }
 static inline void z80w16(u16 addr, u16 v) { *Z80_MEM(addr) = v & 0xFF;
@@ -193,25 +148,8 @@ static void PSGDAC_init(u32 dpcmRingBase)
     z80w8(P_v3_c_page + 1, Z80_WAVE >> 8);
     z80w16(P_v3_c_out + 1, Z80_DUMMY);
     z80w16(P_v2d_d_out + 1, Z80_DUMMY);
-    z80w16(P_svc + 1, psgdacEntry[PSGDAC_V3]);
-    z80w16(P_svcout + 1, psgdacEntry[PSGDAC_V3]);
-
-    // Own the queue cursors from here: the driver deliberately does not set
-    // them, because its preamble runs after the bus is released and would race
-    // this frame's first flush.
-    z80w16(Z80_QPTR, Z80_QBASE);
-    z80w8(Z80_QEND, Z80_QBASE & 0xFF);
-
-    // Fill the queue with harmless commands rather than leaving it as whatever
-    // the Z80's RAM powered up holding. If anything ever does replay a stale
-    // entry, it writes a zero to the driver's own scratch byte instead of to an
-    // arbitrary address -- which, through the bank window, could be 68000 RAM.
-    for (i = 0; i < 256; i += 3)
-    {
-        *Z80_MEM(Z80_QBASE + i)     = Z80_DUMMY & 0xFF;
-        if (i + 1 < 256) *Z80_MEM(Z80_QBASE + i + 1) = Z80_DUMMY >> 8;
-        if (i + 2 < 256) *Z80_MEM(Z80_QBASE + i + 2) = 0;
-    }
+    z80w16(P_entry + 1, psgdacEntry[PSGDAC_V3]);
+    for (i = 0; i < 4; i++) z80w16(pchNext[i], psgdacEntry[PSGDAC_V3]);
 
     for (i = 0; i < 3; i++)
     {
@@ -221,8 +159,6 @@ static void PSGDAC_init(u32 dpcmRingBase)
     }
     psgdacVariant = PSGDAC_V3;
     psgdacSentVar = PSGDAC_V3;
-    psgdacQEnd = Z80_QBASE & 0xFF;
-    cmdCount = 0;
 }
 
 // Release the bus held since PSGDAC_init. The loop starts here, and from this
@@ -272,7 +208,7 @@ static void PSGDAC_flush(void)
     u8 all = (v != psgdacSentVar);
     u8 i;
 
-    if (!psgdacReady) { cmdCount = 0; return; }
+    if (!psgdacReady) return;
 
     for (i = 0; i < 2; i++)
     {
@@ -302,34 +238,17 @@ static void PSGDAC_flush(void)
         psgdacDpcmSent = psgdacDpcmOn;
     }
 
-    // The service routine restores the idle jump from here when it drains, so
-    // this must always name the running variant.
-    if (all) { z80w16(P_svcout + 1, psgdacEntry[v]); psgdacSentVar = v; }
-
-    // Append this frame's chip writes as (address, data) triples.
-    for (i = 0; i < cmdCount; i++)
+    // Re-point every tail jump at the running variant.  The Z80 is stopped, so
+    // all four writes land before it takes another branch.
+    if (all)
     {
-        z80w8(Z80_QBASE | psgdacQEnd, cmdAddr[i] & 0xFF);      psgdacQEnd++;
-        z80w8(Z80_QBASE | psgdacQEnd, cmdAddr[i] >> 8);        psgdacQEnd++;
-        z80w8(Z80_QBASE | psgdacQEnd, cmdData[i]);             psgdacQEnd++;
+        for (i = 0; i < 4; i++) z80w16(pchNext[i], psgdacEntry[v]);
+        psgdacSentVar = v;
     }
 
     // Grab the PCM reader's position while we already hold the bus, so the
     // refill logic outside the window knows which pages are behind the reader.
     psgdacDpcmPage = z80r8(Z80_DPCMPAGE);
-
-    if (cmdCount)
-    {
-        z80w8(Z80_QEND, psgdacQEnd);
-        z80w16(P_svc + 1, L_svcrun);        // wake the service slot
-    }
-    else if (all)
-    {
-        // No work queued. Only re-point the idle jump if the queue really is
-        // empty -- otherwise the service routine is mid-drain and owns it.
-        if (z80r8(Z80_QPTR) == psgdacQEnd) z80w16(P_svc + 1, psgdacEntry[v]);
-    }
-    cmdCount = 0;
 }
 
 #endif // _PSGDAC_H_

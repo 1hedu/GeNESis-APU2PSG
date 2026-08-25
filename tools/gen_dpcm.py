@@ -18,7 +18,7 @@ Usage:
 """
 import math, sys
 
-OUT_RATE = 19349.0                      # V2D loop rate; recorder must agree
+OUT_RATE = 20455.0                      # V2D loop rate; recorder must agree
 NES_CLK = 1789773.0
 # NTSC $4010 rate table: CPU cycles per delta bit
 RATE_CYC = [428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54]

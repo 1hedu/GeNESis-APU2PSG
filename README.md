@@ -80,11 +80,9 @@ Why not period 0? Because its behaviour is not portable: MAME-lineage emulators 
 
 | variant | voices | cycles | sample rate | 12.5% duty ceiling |
 |---|---|---|---|---|
-| **V3**  | pulse + pulse + triangle | 243 | 14731 Hz | 1841 Hz |
-| **V2**  | pulse + pulse            | 154 | 23244 Hz | 2905 Hz |
-| **V2D** | pulse + pulse + PCM      | 185 | 19349 Hz | 2419 Hz |
-
-Ten of those cycles in every variant are the service slot — one jump, and the reason the Z80 owns every sound chip on the machine. See below.
+| **V3**  | pulse + pulse + triangle | 233 | 15363 Hz | 1920 Hz |
+| **V2**  | pulse + pulse            | 144 | 24858 Hz | 3107 Hz |
+| **V2D** | pulse + pulse + PCM      | 175 | 20455 Hz | 2557 Hz |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/loop-budget-dark.png">
@@ -148,7 +146,7 @@ Measured as spectral error against the NES's own 32-step staircase: volume DAC �
 
 The real value is second-order, and it lands twice:
 
-- **The wave voice leaves the Z80 loop**, shortening it from 243 to 154 cycles. The pulse ceiling goes from 1841 Hz to 2905 Hz — 97% → **100%** of pulse frames in the capture keep their true duty.
+- **The wave voice leaves the Z80 loop**, shortening it from 233 to 144 cycles. The pulse ceiling goes from 1920 Hz to 3107 Hz — 97% → **100%** of pulse frames in the capture keep their true duty.
 - **PSG channel 2 goes free**, so tone-clocked noise stops costing anything and every reachable NES noise period is available at once.
 
 That is why the default mode is FM TRI. The PSG-only path is still one button away.
@@ -164,19 +162,16 @@ Status: **working.** Press C and an embedded drum sample plays through the whole
 Two of them are now unnecessary rather than unfinished. The volume DAC produces the duties directly, so there is nothing left for "50% square + FM to color it into 12.5%" to fix, and nothing left for a DC-offset trick on an FM operator to reach. FM's remaining jobs are the ones the PSG genuinely cannot do: the triangle, the DAC channel for DPCM, and extra polyphony above the volume DAC's pitch ceiling if you ever want the high leads to keep their duty. FM is measurably *worse* than the volume DAC at pulses at every pitch tested — best 2-operator FM manages −7.1 dB against a 12.5% target where the DAC gets −18.5 dB at 220 Hz — so it is only worth a pulse slot above the ceiling, where today's fallback is a plain 50% square at −2.2 dB.
 
 
-# One writer
+# Who writes what
 
-The Z80 owns **every** sound chip write on the machine — not just its own DAC voices, but PSG tone periods, PSG attenuations, the noise control register, and the YM2612 as well. The 68000 does not touch a chip register after boot. It queues `(address, data)` pairs into a page of Z80 RAM and the loop replays one per sample.
+The Z80 does only the **sample-rate** work: the DAC voices and, in V2D, PCM streaming into the YM2612. Everything **register-rate** — the FM triangle, noise control, hardware tone periods — is written by the 68000 directly, the way every Mega Drive game does it.
 
-That is not tidiness, it is three specific bugs that the split arrangement kept producing:
+That split works because of a fact that is easy to miss: **the PSG is not on the Z80 bus.** It lives in the VDP at `0xC00011`, so the 68000 reaches it with no bus request and no interruption to the Z80 loop at all. Only the YM2612 sits in Z80 address space. Two rules keep the two masters honest:
 
-- **Reaching a chip means stopping the audio.** The 68000 cannot get at the PSG or the YM2612 without holding the Z80 bus, and holding the Z80 bus halts the synthesis loop. Once a frame that is a 60 Hz artefact; doing it while also busy-waiting on the YM2612's status flag makes the hole big enough to hear.
-- **A PSG tone period is two bytes.** A latch byte, then a data byte. With two masters on the bus, one of the loop's attenuation writes can land between them — and the data byte is then applied to the *Z80's* channel instead. In special noise mode the corrupted register is channel 2's period, which is the drum pitch.
-- **The YM2612's part-I address latch is load-bearing.** It sits on register 2Ah so PCM costs one store per sample. Anything else writing part I breaks it. With one writer, restoring it is just another queued pair, in order.
+- **A PSG tone period is a latch byte plus a data byte**, and the Z80's attenuation bytes re-point the chip's register latch. So tone-period pairs are wrapped in a short bus request — the Z80 is stopped for a couple of microseconds and nothing can interleave. Attenuation and noise-control writes are single self-contained bytes and go out bare.
+- **The YM2612 is on the Z80 bus**, so FM writes hold the bus; and any part-I access breaks the address latch the V2D PCM store relies on, so `0x2A` is re-latched before the bus is released — deterministically, while the Z80 is stopped.
 
-The cost is ten cycles a sample — the service slot is a single jump that the 68000 re-points when it has work, and that the service routine re-points back when the queue drains. What the 68000 still does inside a bus window is patch the loop's immediate operands and append to the queue: plain byte stores, no waits, no ordering rules.
-
-One command per sample is roughly 15,000 chip writes a second, against the ~20 a frame that a register update actually needs, so the queue is always drained long before the next frame arrives.
+An earlier design routed every chip write through a Z80-side command queue instead. It cost 10 cycles a sample forever (a permanent 6.5% tax on the pulse ceiling), produced a boot-race crash, and — found by A/B measurement after the rewrite — could leave a stale channel sounding underneath the music in envelope-heavy passages, which was audible on hardware as a persistent "something is too loud." Direct writes cannot be dropped or reordered, and deleting the queue deleted that class of bug.
 
 
 # Controls

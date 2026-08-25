@@ -3,45 +3,32 @@
 ; ==============================================================================
 ;
 ; The SN76489's 4-bit attenuator is a logarithmic DAC.  Park a tone channel's
-; period at 0 so its output is a constant level, then rewrite that channel's
-; attenuation register fast enough and the channel stops being a square wave
-; and becomes a waveform generator.  That is the whole trick.  It is old, it is
-; well known, and it is the only way to get 12.5% / 25% / 75% pulses and a real
-; NES triangle staircase out of a PSG without touching the FM chip.
+; period at 1 so its output is an ultrasonic carrier averaging to a constant
+; level, then rewrite that channel's attenuation register fast enough and the
+; channel stops being a square wave and becomes a waveform generator.
 ;
-; The 68000 cannot drive it: even a per-scanline H-interrupt only covers the
-; 224 active lines and then goes silent for the 38 lines of vblank, which is a
-; 60 Hz buzz laid over everything.  So the loop lives here, free-running.
+; THE Z80 DOES ONLY THE SAMPLE-RATE WORK: the DAC voices and, in V2D, PCM
+; streaming into the YM2612.  Everything register-rate -- FM triangle, noise
+; control, hardware tone periods -- is written by the 68000 directly, the way
+; every Mega Drive game does it.  That is safe because the PSG lives in the
+; VDP at 68000 0C00011h, not on this bus: the 68000 reaches it with no bus
+; request at all.  Only two rules keep the two masters honest:
 ;
-; THE Z80 OWNS EVERY SOUND CHIP WRITE.  Not just its own DAC voices -- PSG tone
-; periods, PSG attenuations, the noise control register, and the YM2612 too.
-; The 68000 posts (address, data) triples into a queue and the loop replays one
-; per sample.  It works that way because the alternative does not:
+;   - a PSG tone period is a latch byte plus a data byte, and this loop's
+;     attenuation bytes re-point the chip's register latch; so the 68000 wraps
+;     tone-period pairs in a short bus request (this loop is stopped, nothing
+;     interleaves).  Attenuation and noise-control writes are single
+;     self-contained bytes and need no such care.
+;   - the YM2612 is on this bus, so the 68000 holds the bus for FM writes and,
+;     having touched part I, re-latches address 2Ah before releasing -- the PCM
+;     store below relies on that latch standing.
 ;
-;   - Any 68000 access to the PSG or the YM2612 requires holding the Z80 bus,
-;     and holding the Z80 bus stops this loop, which stops the audio.  Doing
-;     that once a frame is a 60 Hz artefact; doing it while also busy-waiting
-;     on the YM2612's status flag makes the hole big enough to hear.
-;   - A PSG tone period is a latch byte followed by a data byte.  With two
-;     masters on the bus, one of this loop's attenuation writes can land
-;     between them, and the data byte is then applied to the wrong channel.
-;     One writer means that cannot happen.
-;   - The YM2612's part-I address port stays latched on 2Ah so PCM costs one
-;     store per sample.  Anything else writing part I breaks that latch.  One
-;     writer means the re-latch is just another queued triple, in order.
+; The 68000 also patches this loop's immediate operands once a frame, bus held.
+; Patch points are labelled P_*: each names the instruction; its operand starts
+; one byte later.  psgdac.h owns those offsets.
 ;
-; What the 68000 still does inside a bus window is patch the loop's immediate
-; operands and append to the queue -- plain byte stores, no waits, no ordering
-; rules.  Nothing else.
-;
-; SAMPLE RATE IS LOOP LENGTH.  Every voice added to the loop lowers the rate
-; and with it the pitch ceiling, so the driver ships three loop variants and
-; the 68000 picks one per frame.  Rates are in psgdac.h, derived from the
-; cycle counts the assembler reports.
-;
-; Patch points are labelled P_*.  Each names the *instruction*; the operand it
-; carries starts one byte later (two for the 0xFD-prefixed ones).  psgdac.h
-; owns those offsets so they only have to be right in one place.
+; SAMPLE RATE IS LOOP LENGTH, so each voice added lowers every voice's pitch
+; ceiling.  Three loop bodies; the 68000 re-points the tail jumps to switch.
 ; ==============================================================================
 
 PSG         equ 7F11h           ; PSG port, seen from the Z80 bus
@@ -52,8 +39,6 @@ phC         equ VARS+0          ; wave voice phase accumulator (16-bit)
 phCH        equ VARS+1          ;   ...its high byte, which is the table index
 dummy       equ VARS+4          ; store target for a disabled voice: same 13 cycles
 dpcmPage    equ VARS+5          ; page the PCM reader is currently in, for the 68000
-qptr        equ VARS+6          ; queue read cursor (16-bit; high byte = QPAGE)
-qend        equ VARS+8          ; queue write cursor, low byte only
 
 STACK       equ 02F0h
 QPAGE       equ 03h             ; command queue page
@@ -85,15 +70,6 @@ start:
             ld (hl),1
             ld (hl),1
             ld (hl),1
-
-            ; The queue cursors are NOT initialised here. This preamble runs
-            ; when the 68000 releases the bus, which is a race the 68000 loses:
-            ; it can post a frame of commands and set qend before these stores
-            ; land, and then this would reset qend under it. The service routine
-            ; would walk the whole 256-byte page replaying uninitialised RAM as
-            ; (address, data) pairs -- and any address in 8000h..FFFFh writes
-            ; through the bank window into 68000 RAM. The 68000 sets both
-            ; cursors during upload instead, while the Z80 is still held.
 
             ld hl,0             ; pulse A phase lives in HL
             exx
@@ -134,7 +110,7 @@ P_v3_c_page:    ld d,WAVEPAGE
                 ld e,a
                 ld a,(de)
 P_v3_c_out:     ld (dummy),a
-                jp P_svc
+P_v3_next:      jp L_v3
 L_v3end:
 
 ; ==============================================================================
@@ -160,7 +136,7 @@ P_v2_b_span:    and 00h
 P_v2_b_mute:    add a,MUTE_B
 P_v2_b_out:     ld (dummy),a
                 exx
-                jp P_svc
+P_v2_next:      jp L_v2
 L_v2end:
 
 ; ==============================================================================
@@ -199,7 +175,7 @@ P_v2d_b_out:    ld (dummy),a
 P_v2d_d_out:    ld (dummy),a        ; -> YM2612 data port, 2Ah already latched
                 inc c
                 jr z,L_v2dwrap      ; not taken 255 samples out of 256
-                jp P_svc
+P_v2d_next:     jp L_v2d
 L_v2dend:
 
 ; Out of line so the wrap only costs anything on the 1-in-256 sample that
@@ -212,43 +188,4 @@ L_v2dwrap:
 P_dpcm_page:    or 90h              ; ...based here
                 ld b,a
                 ld (dpcmPage),a
-                jp P_svc
-
-; ==============================================================================
-; The service slot.
-;
-; Every variant's tail lands here, and this one jump decides what happens next.
-; Idle, the 68000 leaves it pointing straight back at the running variant, so
-; servicing costs exactly one jump -- 10 cycles a sample, the price of having a
-; single writer for all four sound chips.  With work queued the 68000 repoints
-; it at L_svcrun, which replays one triple per sample and points it back when
-; the queue drains.  One command a sample is ~15 kHz of chip writes, far more
-; than a frame of register updates needs, and no single sample is delayed by
-; more than the one command.
-; ==============================================================================
-; The idle cost of having a single writer for all four sound chips: one jump.
-;@cycles L_svcslot L_svcrun
-L_svcslot:
-P_svc:      jp L_v3             ; patched: running variant, or L_svcrun
-
-L_svcrun:
-            push hl             ; HL is pulse A's phase, and must survive
-            ld hl,(qptr)
-            ld e,(hl)           ; target address, low
-            inc l               ; queue is page-aligned, so this wraps for free
-            ld d,(hl)           ; target address, high
-            inc l
-            ld a,(hl)           ; the byte to write
-            inc l
-            ld (de),a           ; PSG, YM part I, YM part II -- all just addresses
-            ld (qptr),hl
-            ld a,(qend)
-            cp l
-            jr nz,L_svcout
-            ; Drained.  Point the service slot back at the running variant, which
-            ; is whatever the exit jump below already points at.
-            ld hl,(P_svcout+1)
-            ld (P_svc+1),hl
-L_svcout:
-            pop hl
-P_svcout:   jp L_v3             ; patched: running variant
+P_v2d_wrapnext: jp L_v2d

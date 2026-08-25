@@ -40,28 +40,35 @@
 // -----------------------------------------------------------------------------
 // Sound chip access.
 //
-// After boot the 68000 does not write a sound chip at all: it queues (address,
-// data) triples and the Z80 replays them, one per sample. That is what makes a
-// PSG tone period safe -- its latch and data bytes are consecutive entries in
-// one writer's queue, so nothing can land between them.
+// The PSG lives in the VDP at 0xC00011 -- NOT on the Z80 bus -- so the 68000
+// writes it directly, any time, with no bus request.  Two rules keep the two
+// masters honest:
 //
-// The exception is initialisation, which runs with the Z80 held in reset. There
-// the 68000 really is the only master, so it writes directly and can busy-wait
-// on the YM2612 without stalling anything.
+//   - A tone period is a latch byte plus a data byte, and the Z80 DAC loop's
+//     attenuation bytes re-point the PSG's register latch.  So tone-period
+//     pairs are wrapped in a short bus request: the Z80 is stopped for ~2 us
+//     and nothing can interleave.  Attenuation and noise-control writes are
+//     single self-contained bytes and go out bare.
+//   - The YM2612 IS on the Z80 bus, so FM writes hold the bus; and any part-I
+//     access breaks the address latch the V2D PCM store relies on, so 0x2A is
+//     re-latched before the bus is released.
 // -----------------------------------------------------------------------------
-#define PSG_PORT_68K ((vu8*)0xC00011)   // SGDK defines PSG_PORT as a plain address
+#define PSG_PORT_68K ((vu8*)0xC00011)
 
-static inline void psgWrite(u8 b) { PSGDAC_psg(b); }
+static inline void psgWrite(u8 b) { *PSG_PORT_68K = b; }
 
+// Tone periods only; must NOT be called while the bus is already held.
 static void psgTone(u8 ch, u16 period)
 {
-    psgWrite(0x80 | (ch << 5) | (period & 0x0F));
-    psgWrite((period >> 4) & 0x3F);
+    Z80_requestBus(TRUE);
+    *PSG_PORT_68K = 0x80 | (ch << 5) | (period & 0x0F);
+    *PSG_PORT_68K = (period >> 4) & 0x3F;
+    Z80_releaseBus();
 }
 
 static inline void psgAtten(u8 ch, u8 att) { psgWrite(0x90 | (ch << 5) | (att & 0x0F)); }
 
-// ---- direct access, valid only while the Z80 is in reset -------------------
+// ---- direct access, valid only while the bus is held -----------------------
 static inline void psgDirect(u8 b) { *PSG_PORT_68K = b; }
 
 static void ymDirect(u8 part, u8 reg, u8 val)
@@ -293,15 +300,17 @@ static void noiseOut(u8 white, u8 rate)
 // -----------------------------------------------------------------------------
 // YM2612 channel 6 DAC, for DPCM.
 // -----------------------------------------------------------------------------
-static inline void ymWrite(u8 part, u8 reg, u8 val) { PSGDAC_ym(part, reg, val); }
+
 
 // Part I's address port stays latched on 0x2A so the Z80 can feed the DAC with
 // one store per sample.  Anything the 68000 writes through part I breaks that
 // latch, so put it back.  The FM triangle lives on channel 5 -- part II -- for
 // exactly this reason: its per-frame frequency writes never touch part I.
+// Callers hold the bus.  Any part-I access moved the address latch; put it
+// back on the DAC register so the Z80's PCM store keeps landing where it must.
 static void ymRelatchDac(void)
 {
-    if (dpcmAvailable) PSGDAC_cmd(Z80_YM_ADDR1, 0x2A);
+    if (dpcmAvailable) *(vu8*)0xA04000 = 0x2A;
 }
 
 static void ymDacInit(void)
@@ -341,9 +350,11 @@ static void ymDacInit(void)
 // Added to every operator TL. Calibrated against the NES mixer, not guessed:
 // with the linear-approx weights (0.00752/step pulse, 0.00851/step triangle)
 // the capture's triangle-to-pulse1 RMS ratio should be 0.78; at level 8 the
-// ratio measured 1.75 in PicoDrive -- 7.0 dB hot. 0.75 dB a step -> +9.
+// level was recalibrated twice: once against a queue-build bug that inflated
+// the pulses, then against the fixed pulses. Current value measured against
+// the capture: tri/pulse1 RMS 0.78 target, 0.75 dB a step.
 // UP/DOWN trim this live outside manual-noise mode.
-#define FM_TRI_LEVEL  17
+#define FM_TRI_LEVEL  23
 
 // fnum at block 0 for a NES triangle period t is FM_TRI_K / (t + 1).
 #define FM_TRI_K      2202010UL
@@ -358,11 +369,13 @@ static u8  fmTriLevel  = FM_TRI_LEVEL;
 static void ymTriangleLevel(void)
 {
     u8 op;
+    Z80_requestBus(TRUE);
     for (op = 0; op < 4; op++)
     {
         u16 tl = fmTriTL[op] + fmTriLevel;
-        ymWrite(FM_TRI_PART, 0x40 + (op * 4) + FM_TRI_IDX, tl > 127 ? 127 : tl);
+        ymDirect(FM_TRI_PART, 0x40 + (op * 4) + FM_TRI_IDX, tl > 127 ? 127 : tl);
     }
+    Z80_releaseBus();               // part II only: the 2A latch was never touched
 }
 
 static void ymTriangleInit(void)
@@ -400,16 +413,20 @@ static void ymTriangleFreq(u16 nesPeriod)
     if (fnum > 2047) fnum = 2047;
 
     // High byte first: the chip latches it and commits both on the low write.
-    ymWrite(FM_TRI_PART, 0xA4 + FM_TRI_IDX, ((block & 7) << 3) | ((fnum >> 8) & 7));
-    ymWrite(FM_TRI_PART, 0xA0 + FM_TRI_IDX, fnum & 0xFF);
+    Z80_requestBus(TRUE);
+    ymDirect(FM_TRI_PART, 0xA4 + FM_TRI_IDX, ((block & 7) << 3) | ((fnum >> 8) & 7));
+    ymDirect(FM_TRI_PART, 0xA0 + FM_TRI_IDX, fnum & 0xFF);
+    Z80_releaseBus();               // part II only
 }
 
 static void ymTriangleKey(u8 on)
 {
     if (on == fmTriKeyed) return;
     fmTriKeyed = on;
-    ymWrite(0, 0x28, on ? (0xF0 | FM_TRI_KEY) : FM_TRI_KEY);
-    ymRelatchDac();
+    Z80_requestBus(TRUE);
+    ymDirect(0, 0x28, on ? (0xF0 | FM_TRI_KEY) : FM_TRI_KEY);
+    ymRelatchDac();                 // part I was touched: restore the PCM latch
+    Z80_releaseBus();
 }
 
 // -----------------------------------------------------------------------------
@@ -839,9 +856,8 @@ static void drawUi(void)
                 haveExt ? 2 : 1, (long)SYS_getFPS());
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
 
-    sprintf(t, "LOOP %-3s (%d cyc)  DPCM %s%s", variantName[psgdacVariant],
-            psgdacCycles[psgdacVariant], dpcmAvailable ? (dpcmOn ? "ON " : "rdy") : "n/a",
-            cmdDropped ? "  Q-OVF!" : "");
+    sprintf(t, "LOOP %-3s (%d cyc)  DPCM %s", variantName[psgdacVariant],
+            psgdacCycles[psgdacVariant], dpcmAvailable ? (dpcmOn ? "ON " : "rdy") : "n/a");
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y += 2;
 
     sprintf(t, "P1 %4d Hz d%d v%2d %s", pulseHz(p1Period), p1Duty, p1Vol,
