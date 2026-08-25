@@ -35,7 +35,6 @@
 
 #include "psgdac.h"
 #include "apudata.h"
-#include "pcmsample.h"
 
 // -----------------------------------------------------------------------------
 // Sound chip access.
@@ -169,6 +168,18 @@ static const u16 noisePeriodPeriodic[16] = {1, 3, 6, 12, 23, 35, 46, 58, 73, 92,
 static const u8 noiseFixedRate[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2};
 static const u8 noiseNeedsCh2[16]  = {1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1};
 
+// How the noise generator gets its shift clock.  C cycles this, so the two ways
+// of making a NES drum can be compared against each other inside a song without
+// changing anything else.  AUTO is what the synthesis mode would pick on its
+// own; CH2 forces tone-clocked noise everywhere, which is exact but costs
+// channel 2 -- audibly, if the triangle is living there.
+#define NZSRC_AUTO   0
+#define NZSRC_FIXED  1
+#define NZSRC_CH2    2
+#define NZSRC_COUNT  3
+static const char* const noiseSrcName[NZSRC_COUNT] = {"AUTO", "FIXED", "CH2"};
+static u8 noiseSrc = NZSRC_AUTO;
+
 // -----------------------------------------------------------------------------
 // Shared memory protocol with the Lua side.
 //
@@ -212,17 +223,12 @@ enum {
 };
 
 // -----------------------------------------------------------------------------
-// DPCM test playback.  The Z80's V2D loop free-runs through the 4 KB ring at
-// its sample rate and publishes which 256-byte page it is reading; the 68000's
-// only job is to keep filling the pages behind it.  C plays an embedded drum
-// sample through that path, which exercises the entire DPCM chain -- variant
-// switch, ring streaming, the YM2612 DAC -- with no script involved.
+// DPCM.  The Z80's V2D loop free-runs through the 4 KB ring at its sample rate
+// and publishes which 256-byte page it is reading; the sample data is written
+// into the ring by the Lua player, which knows where the ring is because the
+// ROM publishes its address in the shared block.  Nothing here has to hand the
+// Z80 anything -- it reads 68000 RAM through its own bank window.
 // -----------------------------------------------------------------------------
-static u32 pcmPos      = 0;         // next byte of the sample to stream
-static u8  pcmPlaying  = 0;
-static u8  pcmLastPage = 0;
-static u16 pcmSilence  = 0;         // pages of silence streamed after the end
-
 // PCM ring the Z80 streams from through its bank window.  4 KB, page aligned so
 // the driver's wrap is a mask instead of a compare.  Lua writes it directly, so
 // sample data never has to cross the Z80 bus.
@@ -648,7 +654,7 @@ static void readApuBlock(void)
             noiseVol       = APU_EXT[X_NOI_VOL] & 0x0F;
             noiseOn        = APU_EXT[X_NOI_ON];
         }
-        dpcmOn         = APU_EXT[X_DPCM_ON] | pcmPlaying;
+        dpcmOn         = APU_EXT[X_DPCM_ON];
         nesFrame       = APU_EXT[X_FRAME];
     }
     else
@@ -682,48 +688,9 @@ static void readApuBlock(void)
 
 // Decode one frame of the embedded capture into the same variables the script
 // path fills, so everything downstream is identical.
-static u16 pcmFill(u8 *dst, u16 count)
-{
-    u16 i;
-    for (i = 0; i < count; i++)
-    {
-        if (pcmPos < PCM_TEST_LEN) dst[i] = pcmTest[pcmPos++];
-        else                       dst[i] = 0x80;
-    }
-    return count;
-}
-
-static void pcmStart(void)
-{
-    u16 i;
-    if (!dpcmAvailable) return;
-    pcmPos = 0;
-    pcmSilence = 0;
-    // Prime the whole ring so the reader has clean data wherever it is parked.
-    for (i = 0; i < 16; i++) pcmFill(dpcmRing + i * 256, 256);
-    pcmLastPage = psgdacDpcmPage;
-    pcmPlaying = 1;
-}
 
 // Refill every page the reader has moved past since last frame.  Runs outside
 // the bus window -- the ring lives in 68000 RAM, so no stall is involved.
-static void pcmService(void)
-{
-    u8 page, cur;
-    if (!pcmPlaying) return;
-
-    cur = psgdacDpcmPage & 0x0F;
-    for (page = pcmLastPage & 0x0F; page != cur; page = (page + 1) & 0x0F)
-    {
-        pcmFill(dpcmRing + (u16)page * 256, 256);
-        if (pcmPos >= PCM_TEST_LEN) pcmSilence++;
-    }
-    pcmLastPage = psgdacDpcmPage;
-
-    // One full ring of silence after the sample: the reader has definitely
-    // consumed the tail, so stop claiming the V2D loop.
-    if (pcmSilence >= 16) pcmPlaying = 0;
-}
 
 static void readCartFrame(void)
 {
@@ -756,7 +723,7 @@ static void readCartFrame(void)
     }
     else noiseOn = 1;
 
-    dpcmOn   = pcmPlaying;             // the capture has no PCM; C plays the test sample
+    dpcmOn   = 0;                      // the capture carries no DMC triggers
     haveExt  = 1;                      // fields are NES-native, like v2
     nesFrame = cartFrame & 0xFF;
 
@@ -819,9 +786,11 @@ static void synthUpdate(void)
     {
         // Only when the triangle is not itself using channel 2.  In FM 2P+DAC it
         // is, so noise falls back to the three fixed rates there.
-        if (synthMode == MODE_FM ||
-            synthMode == MODE_FMP ||
-            synthMode == MODE_FMALL)        stealCh2 = 1;
+        if (noiseSrc == NZSRC_CH2)          stealCh2 = 1;
+        else if (noiseSrc == NZSRC_FIXED)   stealCh2 = 0;
+        else if (synthMode == MODE_FM ||
+                 synthMode == MODE_FMP ||
+                 synthMode == MODE_FMALL)   stealCh2 = 1;
         else if (synthMode == MODE_DAC_N &&
                  noiseNeedsCh2[noisePeriodIdx]) stealCh2 = 1;
     }
@@ -1058,7 +1027,7 @@ static void handleInput(u16 changed)
             dataSource = !dataSource;
             cartFrame = 0;
         }
-        if (changed & BUTTON_C) pcmStart();
+        if (changed & BUTTON_C) noiseSrc = (noiseSrc + 1) % NZSRC_COUNT;
 
         // LEFT/RIGHT flips which pulse is the FM one, so the two can be A/B'd
         // against each other inside the same song without stopping.
@@ -1134,9 +1103,10 @@ static void drawUi(void)
         sprintf(t, "TR %4d Hz     %s", pulseHz(triPeriod) / 2, triName[triSource]);
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
 
-    sprintf(t, "NZ p%2d %s v%2d %s", noisePeriodIdx,
+    sprintf(t, "NZ p%2d %s v%2d %s [%s]", noisePeriodIdx,
             noiseMode ? "SHORT" : "LONG ", noiseVol,
-            !noiseOn ? "-" : (noiseStoleCh2 ? "CH2-CLOCKED" : "FIXED"));
+            !noiseOn ? "-" : (noiseStoleCh2 ? "CH2-CLOCKED" : "FIXED"),
+            noiseSrcName[noiseSrc]);
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y += 2;
 
     sprintf(t, "mute %c%c%c%c   nes frame %3d",
@@ -1147,7 +1117,7 @@ static void drawUi(void)
     VDP_clearText(2, y, 38);
     VDP_drawText(manualNoiseControl ? "MANUAL NOISE  B/C period  Z mode"
                  : (synthMode == MODE_FMP ? "START mode  L/R swap FM pulse  U/D lvl"
-                                          : "START mode B src C drum MODE noise"), 2, y);
+                                          : "START mode B src C noise MODE audition"), 2, y);
 }
 
 // SGDK calls main with a flag saying whether this was a cold boot; declaring it
@@ -1202,7 +1172,6 @@ int main(bool hardReset)
         prevButtons = joypad;
 
         handleInput(changed);
-        pcmService();
         if (dataSource == SRC_CART) readCartFrame();
         else                        readApuBlock();
         synthUpdate();      // fills a local command buffer; no bus, no chips
