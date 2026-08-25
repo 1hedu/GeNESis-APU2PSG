@@ -37,6 +37,7 @@
 
 // Z80-side addresses the driver was assembled with.
 #define Z80_DUMMY       0x0204          // 13-cycle store that goes nowhere
+#define Z80_DPCMPAGE    0x0205          // page the PCM reader is in (driver-owned)
 #define Z80_QPTR        0x0206          // queue read cursor (driver-owned)
 #define Z80_QEND        0x0208          // queue write cursor (68000-owned)
 #define Z80_QBASE       0x0300          // 256-byte queue page: 85 triples
@@ -101,6 +102,7 @@ static u8 psgdacDpcmOn   = 0;
 static u8 psgdacDpcmSent = 0xFF;
 static u8 psgdacReady    = 0;
 static u8 psgdacQEnd     = 0;           // our shadow of the Z80's queue tail
+static u8 psgdacDpcmPage = 0;           // reader's current ring page, from the flush
 
 // ---- the command queue -----------------------------------------------------
 // Built up over the frame in 68000 RAM, then copied into the Z80's queue page
@@ -172,6 +174,7 @@ static void PSGDAC_init(u32 dpcmRingBase)
         u16 z80base = 0x8000 + (u16)(dpcmRingBase - 0xFF0000);
         z80w16(P_dpcm_base + 1, z80base);
         z80w8(P_dpcm_page + 1, z80base >> 8);
+        z80w8(Z80_DPCMPAGE, z80base >> 8);      // reader starts at the ring base
     }
 
     // All voices start silent and detached from the PSG.
@@ -310,6 +313,10 @@ static void PSGDAC_flush(void)
         z80w8(Z80_QBASE | psgdacQEnd, cmdAddr[i] >> 8);        psgdacQEnd++;
         z80w8(Z80_QBASE | psgdacQEnd, cmdData[i]);             psgdacQEnd++;
     }
+
+    // Grab the PCM reader's position while we already hold the bus, so the
+    // refill logic outside the window knows which pages are behind the reader.
+    psgdacDpcmPage = z80r8(Z80_DPCMPAGE);
 
     if (cmdCount)
     {

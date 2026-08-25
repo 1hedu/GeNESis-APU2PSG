@@ -32,9 +32,9 @@ local BASENAME    = "nes_apu_data.txt"   -- must match the Gens-side script
 local FILENAME    = (scriptDir() or "") .. BASENAME
 local RECORD_DPCM = false                -- see the DPCM note at the bottom
 -- Must match the Genesis driver's V2D loop rate: PCM only plays in the variant
--- that has a PCM voice, and that variant runs at 20455 Hz.  Get this wrong and
+-- that has a PCM voice, and that variant runs at 19349 Hz.  Get this wrong and
 -- everything sampled plays back at the wrong speed.
-local DPCM_RATE   = 20455
+local DPCM_RATE   = 19349
 local DPCM_PER_FRAME = math.floor(DPCM_RATE / 60)
 
 local outputFile, openErr = io.open(FILENAME, "w")

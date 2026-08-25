@@ -156,7 +156,7 @@ DPCM does not belong on the volume DAC. It would consume the entire Z80 loop, ta
 
 The samples stream out of 68000 RAM through the Z80's bank window, *not* over the Z80 bus — because every byte the 68000 hands to the Z80 requires stopping the Z80, and stopping the Z80 stops the audio.
 
-Status: the driver path, the ring protocol and the recorder-side `$4011` capture are all in. It is the least exercised part of this and is off by default — set `RECORD_DPCM = true` in the recorder.
+Status: **working.** Press C and an embedded drum sample plays through the whole chain — the allocator switches the loop to V2D, the Z80 streams the ring from 68000 RAM one byte a sample into the DAC, and the 68000 refills the pages behind the reader. Verified in PicoDrive with every PSG voice muted: the drum is audible through the FM DAC alone and the state winds down to silence when the sample ends. Script-side capture (`RECORD_DPCM = true` in the recorder) feeds the same ring; that half is exercised only by the same code path, not yet by a real captured stream.
 
 ### What this means for the FM ideas in the old TODO
 Two of them are now unnecessary rather than unfinished. The volume DAC produces the duties directly, so there is nothing left for "50% square + FM to color it into 12.5%" to fix, and nothing left for a DC-offset trick on an FM operator to reach. FM's remaining jobs are the ones the PSG genuinely cannot do: the triangle, the DAC channel for DPCM, and extra polyphony above the volume DAC's pitch ceiling if you ever want the high leads to keep their duty. FM is measurably *worse* than the volume DAC at pulses at every pitch tested — best 2-operator FM manages −7.1 dB against a 12.5% target where the DAC gets −18.5 dB at 220 Hz — so it is only worth a pulse slot above the ceiling, where today's fallback is a plain 50% square at −2.2 dB.
@@ -182,6 +182,7 @@ One command per sample is roughly 15,000 chip writes a second, against the ~20 a
 | button | what it does |
 |---|---|
 | B | toggle the data source: **CART** (the capture embedded in the ROM, boot default) vs **SCRIPT** (live shared-memory from Lua) |
+| C | play the embedded test drum through the DPCM path: the Z80's V2D loop streams it from 68000 RAM into the YM2612 DAC |
 | START | cycle synthesis mode: **HW** (everything on hardware tone generators) → **DAC** (volume-DAC pulses and triangle) → **DAC+NOISE** (also tone-clocked noise, which costs the triangle) → **FM TRI** (triangle to FM, so nothing is contested — the default) |
 | X / Y / Z | mute pulse 1 / pulse 2 / triangle |
 | A | mute noise (starts muted) |

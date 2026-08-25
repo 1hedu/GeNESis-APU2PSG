@@ -34,6 +34,7 @@
 
 #include "psgdac.h"
 #include "apudata.h"
+#include "pcmsample.h"
 
 // -----------------------------------------------------------------------------
 // Sound chip access.
@@ -179,6 +180,18 @@ enum {
     X_DPCM_ON, X_FRAME,
     X_COUNT
 };
+
+// -----------------------------------------------------------------------------
+// DPCM test playback.  The Z80's V2D loop free-runs through the 4 KB ring at
+// its sample rate and publishes which 256-byte page it is reading; the 68000's
+// only job is to keep filling the pages behind it.  C plays an embedded drum
+// sample through that path, which exercises the entire DPCM chain -- variant
+// switch, ring streaming, the YM2612 DAC -- with no script involved.
+// -----------------------------------------------------------------------------
+static u32 pcmPos      = 0;         // next byte of the sample to stream
+static u8  pcmPlaying  = 0;
+static u8  pcmLastPage = 0;
+static u16 pcmSilence  = 0;         // pages of silence streamed after the end
 
 // PCM ring the Z80 streams from through its bank window.  4 KB, page aligned so
 // the driver's wrap is a mask instead of a compare.  Lua writes it directly, so
@@ -444,7 +457,7 @@ static void readApuBlock(void)
             noiseVol       = APU_EXT[X_NOI_VOL] & 0x0F;
             noiseOn        = APU_EXT[X_NOI_ON];
         }
-        dpcmOn         = APU_EXT[X_DPCM_ON];
+        dpcmOn         = APU_EXT[X_DPCM_ON] | pcmPlaying;
         nesFrame       = APU_EXT[X_FRAME];
     }
     else
@@ -474,6 +487,49 @@ static void readApuBlock(void)
 
 // Decode one frame of the embedded capture into the same variables the script
 // path fills, so everything downstream is identical.
+static u16 pcmFill(u8 *dst, u16 count)
+{
+    u16 i;
+    for (i = 0; i < count; i++)
+    {
+        if (pcmPos < PCM_TEST_LEN) dst[i] = pcmTest[pcmPos++];
+        else                       dst[i] = 0x80;
+    }
+    return count;
+}
+
+static void pcmStart(void)
+{
+    u16 i;
+    if (!dpcmAvailable) return;
+    pcmPos = 0;
+    pcmSilence = 0;
+    // Prime the whole ring so the reader has clean data wherever it is parked.
+    for (i = 0; i < 16; i++) pcmFill(dpcmRing + i * 256, 256);
+    pcmLastPage = psgdacDpcmPage;
+    pcmPlaying = 1;
+}
+
+// Refill every page the reader has moved past since last frame.  Runs outside
+// the bus window -- the ring lives in 68000 RAM, so no stall is involved.
+static void pcmService(void)
+{
+    u8 page, cur;
+    if (!pcmPlaying) return;
+
+    cur = psgdacDpcmPage & 0x0F;
+    for (page = pcmLastPage & 0x0F; page != cur; page = (page + 1) & 0x0F)
+    {
+        pcmFill(dpcmRing + (u16)page * 256, 256);
+        if (pcmPos >= PCM_TEST_LEN) pcmSilence++;
+    }
+    pcmLastPage = psgdacDpcmPage;
+
+    // One full ring of silence after the sample: the reader has definitely
+    // consumed the tail, so stop claiming the V2D loop.
+    if (pcmSilence >= 16) pcmPlaying = 0;
+}
+
 static void readCartFrame(void)
 {
     const u8 *p = apuData + (u32)cartFrame * APU_DATA_STRIDE;
@@ -505,7 +561,7 @@ static void readCartFrame(void)
     }
     else noiseOn = 1;
 
-    dpcmOn   = 0;                      // the capture carries no PCM
+    dpcmOn   = pcmPlaying;             // the capture has no PCM; C plays the test sample
     haveExt  = 1;                      // fields are NES-native, like v2
     nesFrame = cartFrame & 0xFF;
 
@@ -750,6 +806,7 @@ static void handleInput(u16 changed)
             dataSource = !dataSource;
             cartFrame = 0;
         }
+        if (changed & BUTTON_C) pcmStart();
         if (changed & BUTTON_UP   && fmTriLevel > 0)  { fmTriLevel--; ymTriangleLevel(); }
         if (changed & BUTTON_DOWN && fmTriLevel < 60) { fmTriLevel++; ymTriangleLevel(); }
         if (changed & BUTTON_X) chanEnable[0] = !chanEnable[0];
@@ -804,7 +861,7 @@ static void drawUi(void)
 
     VDP_clearText(2, y, 38);
     VDP_drawText(manualNoiseControl ? "MANUAL NOISE  B/C period  Z mode"
-                                    : "START mode  B cart/script  MODE noise", 2, y);
+                                    : "START mode B src C drum MODE noise", 2, y);
 }
 
 // SGDK calls main with a flag saying whether this was a cold boot; declaring it
@@ -817,16 +874,21 @@ int main(bool hardReset)
 
     for (i = 0; i < 4096; i++) dpcmRing[i] = 0x80;
 
-    dpcmAvailable = ((u32)dpcmRing >= 0xFF1000) &&
-                    (((u32)dpcmRing + 4096) <= 0xFF8000) &&
-                    ((((u32)dpcmRing) & 0xFFF) == 0);
+    // SGDK links RAM at 0xE0FF0000, a mirror of 0xFF0000 on the 68000's 24-bit
+    // bus -- mask pointers down before comparing against bus addresses, or every
+    // range check here silently fails and DPCM reports n/a.
+    {
+        u32 ring = (u32)dpcmRing & 0xFFFFFF;
+        dpcmAvailable = (ring >= 0xFF1000) && ((ring + 4096) <= 0xFF8000) &&
+                        ((ring & 0xFFF) == 0);
+    }
 
     // One bus window for the whole of boot. PSGDAC_init pulses the Z80's reset
     // and then holds the bus: reset is already deasserted, so the YM2612 -- which
     // shares that reset line -- is awake and will keep what we write, while the
     // held bus keeps the Z80 stopped so the 68000 is the only master and may
     // write chips directly and busy-wait on the YM.
-    PSGDAC_init((u32)dpcmRing);
+    PSGDAC_init((u32)dpcmRing & 0xFFFFFF);
     buildTriangleWave();
     for (i = 0; i < 4; i++) psgDirect(0x9F | (i << 5));   // silence all four channels
     if (dpcmAvailable) ymDacInit();
@@ -834,8 +896,8 @@ int main(bool hardReset)
     PSGDAC_start();                 // release the bus; the loop begins here
 
     // Publish the block so Lua can find it, magic last.
-    apuBlock.ring  = dpcmAvailable ? (u32)dpcmRing : 0;
-    apuBlock.self  = (u32)&apuBlock;
+    apuBlock.ring  = dpcmAvailable ? ((u32)dpcmRing & 0xFFFFFF) : 0;
+    apuBlock.self  = (u32)&apuBlock & 0xFFFFFF;
     apuBlock.magic = APU_BLOCK_MAGIC;
 
     cartStep = SYS_isPAL() ? 307 : 256;     // 1.2 or 1.0 capture frames a vblank
@@ -852,6 +914,7 @@ int main(bool hardReset)
         prevButtons = joypad;
 
         handleInput(changed);
+        pcmService();
         if (dataSource == SRC_CART) readCartFrame();
         else                        readApuBlock();
         synthUpdate();      // fills a local command buffer; no bus, no chips
