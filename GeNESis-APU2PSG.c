@@ -324,7 +324,12 @@ static void ymDacInit(void)
 #define FM_TRI_PART   1         // channels 4-6 live on part II
 #define FM_TRI_IDX    1         // ...index 1 of that part is channel 5
 #define FM_TRI_KEY    0x05      // channel code for register 0x28
-#define FM_TRI_LEVEL  8         // added to every TL: headroom, and overall balance
+// Added to every operator TL. Calibrated against the NES mixer, not guessed:
+// with the linear-approx weights (0.00752/step pulse, 0.00851/step triangle)
+// the capture's triangle-to-pulse1 RMS ratio should be 0.78; at level 8 the
+// ratio measured 1.75 in PicoDrive -- 7.0 dB hot. 0.75 dB a step -> +9.
+// UP/DOWN trim this live outside manual-noise mode.
+#define FM_TRI_LEVEL  17
 
 // fnum at block 0 for a NES triangle period t is FM_TRI_K / (t + 1).
 #define FM_TRI_K      2202010UL
@@ -334,6 +339,17 @@ static const u8 fmTriTL[4]  = {0, 26, 38, 47};   // 0.75 dB steps, fitted to the
 
 static u16 fmTriPeriod = 0xFFFF;
 static u8  fmTriKeyed  = 0;
+static u8  fmTriLevel  = FM_TRI_LEVEL;
+
+static void ymTriangleLevel(void)
+{
+    u8 op;
+    for (op = 0; op < 4; op++)
+    {
+        u16 tl = fmTriTL[op] + fmTriLevel;
+        ymWrite(FM_TRI_PART, 0x40 + (op * 4) + FM_TRI_IDX, tl > 127 ? 127 : tl);
+    }
+}
 
 static void ymTriangleInit(void)
 {
@@ -342,7 +358,7 @@ static void ymTriangleInit(void)
     {
         u8 r = (op * 4) + FM_TRI_IDX;
         ymDirect(FM_TRI_PART, 0x30 + r, fmTriMul[op]);                 // DT 0, MUL
-        ymDirect(FM_TRI_PART, 0x40 + r, fmTriTL[op] + FM_TRI_LEVEL);   // total level
+        ymDirect(FM_TRI_PART, 0x40 + r, fmTriTL[op] + fmTriLevel);     // total level
         ymDirect(FM_TRI_PART, 0x50 + r, 0x1F);                         // instant attack
         ymDirect(FM_TRI_PART, 0x60 + r, 0x00);                         // no decay
         ymDirect(FM_TRI_PART, 0x70 + r, 0x00);                         // no second decay
@@ -734,6 +750,8 @@ static void handleInput(u16 changed)
             dataSource = !dataSource;
             cartFrame = 0;
         }
+        if (changed & BUTTON_UP   && fmTriLevel > 0)  { fmTriLevel--; ymTriangleLevel(); }
+        if (changed & BUTTON_DOWN && fmTriLevel < 60) { fmTriLevel++; ymTriangleLevel(); }
         if (changed & BUTTON_X) chanEnable[0] = !chanEnable[0];
         if (changed & BUTTON_Y) chanEnable[1] = !chanEnable[1];
         if (changed & BUTTON_Z) chanEnable[2] = !chanEnable[2];
@@ -768,7 +786,10 @@ static void drawUi(void)
             !p2On ? "-  " : (voiceIsDac[1] ? "DAC" : "HW "));
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
 
-    sprintf(t, "TR %4d Hz     %s", pulseHz(triPeriod) / 2, triName[triSource]);
+    if (triSource == TRI_FM)
+        sprintf(t, "TR %4d Hz     FM  lvl%d", pulseHz(triPeriod) / 2, fmTriLevel);
+    else
+        sprintf(t, "TR %4d Hz     %s", pulseHz(triPeriod) / 2, triName[triSource]);
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
 
     sprintf(t, "NZ p%2d %s v%2d %s", noisePeriodIdx,

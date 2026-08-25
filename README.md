@@ -187,6 +187,7 @@ One command per sample is roughly 15,000 chip writes a second, against the ~20 a
 | A | mute noise (starts muted) |
 | MODE | manual noise audition: step all 16 periods by hand |
 | B / C, LEFT / RIGHT | in manual noise: previous / next NES noise period |
+| UP / DOWN | trim the FM triangle's level live (shown on the TR line) |
 | Z, UP / DOWN | in manual noise: long/short mode, volume |
 
 MODE needs a 6-button pad. The on-screen readout shows which loop variant is running, its sample rate, and whether each voice is currently **DAC** or **HW**, so the crossover is visible while it happens.
