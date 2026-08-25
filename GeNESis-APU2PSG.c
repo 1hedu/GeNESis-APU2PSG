@@ -235,10 +235,12 @@ static u8 dpcmRing[4096] __attribute__((aligned(4096)));
 #define MODE_DAC     1   // volume-DAC pulses and triangle, fixed-rate noise
 #define MODE_DAC_N   2   // ...plus tone-clocked noise, which costs the triangle
 #define MODE_FM      3   // triangle to FM: nothing is contested any more
-#define MODE_COUNT   4
+#define MODE_FMP     4   // ...and one pulse to FM as well; LEFT/RIGHT picks which
+#define MODE_COUNT   5
 
-static const char* const modeName[MODE_COUNT] = {"HW", "DAC", "DAC+NOISE", "FM TRI"};
-static const char* const variantName[PSGDAC_NVARIANT] = {"V3", "V2", "V2D"};
+static const char* const modeName[MODE_COUNT] =
+    {"HW", "DAC", "DAC+NOISE", "FM TRI", "FM TRI+P"};
+static const char* const variantName[PSGDAC_NVARIANT] = {"V3", "V2", "V2D", "V1"};
 
 static u8 synthMode = MODE_FM;
 static u8 dpcmAvailable = 0;
@@ -296,6 +298,7 @@ static u8  variantHold  = 0;
 static const char* const triName[4] = {"-  ", "HW ", "DAC", "FM "};
 
 static u8 voiceIsDac[2] = {0, 0};
+static u8 voiceIsFm[2]  = {0, 0};
 static u8 triSource = TRI_OFF;
 static u8 noiseStoleCh2 = 0;
 
@@ -447,6 +450,132 @@ static void ymTriangleKey(u8 on)
     fmTriKeyed = on;
     Z80_requestBus(TRUE);
     ymDirect(0, 0x28, on ? (0xF0 | FM_TRI_KEY) : FM_TRI_KEY);
+    ymRelatchDac();                 // part I was touched: restore the PCM latch
+    Z80_releaseBus();
+}
+
+// -----------------------------------------------------------------------------
+// An FM pulse, on YM2612 channel 4.
+//
+// Same additive trick as the triangle, different series.  A pulse of duty d has
+// harmonic n at |sin(pi*n*d)|/n, so four carriers at MUL 1, 2, 3, 4 with total
+// levels set from that series are a pulse of that duty -- band-limited to the
+// fourth harmonic, which is as far as four operators reach.  Unlike the
+// triangle's series this one has even harmonics, which is exactly what makes a
+// duty other than 50% sound like one.
+//
+// The levels are absolute rather than normalised per duty, so all four duties
+// come out at the same peak amplitude -- the way the NES's own pulse behaves,
+// where duty changes the timbre and not the loudness.  A 50%% duty leaves two
+// operators silent and a 12.5% duty uses all four, which is the same thing the
+// series says.
+//
+// This is not better than the volume DAC at being a NES pulse; the DAC has the
+// real edges and the harmonics above the fourth.  What it is, is different, and
+// free of the Z80: with a pulse on FM the loop drops to one voice and 73 cycles,
+// so the pulse that stays on the volume DAC gets a 6 kHz ceiling and keeps its
+// true duty at any pitch in the song.
+// -----------------------------------------------------------------------------
+#define FM_PUL_PART   1         // channels 4-6 live on part II
+#define FM_PUL_IDX    0         // ...index 0 of that part is channel 4
+#define FM_PUL_KEY    0x04      // channel code for register 0x28
+#define FM_PUL_LEVEL  19        // base level, ~3 dB above the triangle's 23:
+                                // at full volume a NES pulse's fundamental sits
+                                // that far above the triangle's in the mixer.
+                                // UP/DOWN trim this live in FM TRI+P mode.
+
+// fnum at block 0 for a NES pulse period p is FM_PUL_K / (p + 1).  Twice the
+// triangle's constant, because the pulse divider is 16 where the triangle's is 32.
+#define FM_PUL_K      4404020UL
+
+static const u8 fmPulMul[4] = {1, 2, 3, 4};
+
+// TL offsets per duty, in 0.75 dB steps: -20*log10(|sin(pi*n*d)|/n).  127 is
+// silent, which is what a harmonic the duty nulls out should be.
+static const u8 fmPulTL[4][4] = {
+    { 11,  12,  14,  16},       // 12.5%: every harmonic present, none dominant
+    {  4,   8,  17, 127},       // 25%:   4th nulled
+    {  0, 127,  13, 127},       // 50%:   odd harmonics only -- a square
+    {  4,   8,  17, 127},       // 75%:   same magnitudes as 25%, inverted
+};
+
+// NES volume is linear 0..15; FM total level is 0.75 dB a step.  Volume 0 keys off.
+static const u8 fmPulVolTL[16] =
+    {127, 31, 23, 19, 15, 13, 11, 9, 7, 6, 5, 4, 3, 2, 1, 0};
+
+static u8  fmPulWhich  = 0;     // which NES pulse is on FM; LEFT/RIGHT flips it
+static u16 fmPulPeriod = 0xFFFF;
+static u8  fmPulKeyed  = 0;
+static u8  fmPulDuty   = 0xFF;
+static u8  fmPulVol    = 0xFF;
+static u8  fmPulLevel  = FM_PUL_LEVEL;
+
+static void ymPulseInit(void)
+{
+    u8 op;
+    for (op = 0; op < 4; op++)
+    {
+        u8 r = (op * 4) + FM_PUL_IDX;
+        ymDirect(FM_PUL_PART, 0x30 + r, fmPulMul[op]);   // DT 0, MUL
+        ymDirect(FM_PUL_PART, 0x40 + r, 127);            // silent until keyed
+        ymDirect(FM_PUL_PART, 0x50 + r, 0x1F);           // instant attack
+        ymDirect(FM_PUL_PART, 0x60 + r, 0x00);           // no decay
+        ymDirect(FM_PUL_PART, 0x70 + r, 0x00);           // no second decay
+        ymDirect(FM_PUL_PART, 0x80 + r, 0x0F);           // full sustain, fast release
+        ymDirect(FM_PUL_PART, 0x90 + r, 0x00);           // SSG-EG off
+    }
+    ymDirect(FM_PUL_PART, 0xB0 + FM_PUL_IDX, 0x07);      // no feedback, algorithm 7
+    ymDirect(FM_PUL_PART, 0xB4 + FM_PUL_IDX, 0xC0);      // both speakers
+    ymDirect(0, 0x28, FM_PUL_KEY);                       // key off
+    if (dpcmAvailable) ymRelatchDirect();                // restore the DAC latch
+    fmPulPeriod = 0xFFFF;
+    fmPulDuty = fmPulVol = 0xFF;
+    fmPulKeyed = 0;
+}
+
+// Duty and volume both land in the same four total levels: duty picks the shape
+// of the series, volume slides all of it down together.
+static void ymPulseTone(u8 duty, u8 vol)
+{
+    u8 op;
+
+    if (duty == fmPulDuty && vol == fmPulVol) return;
+    fmPulDuty = duty;
+    fmPulVol  = vol;
+
+    Z80_requestBus(TRUE);
+    for (op = 0; op < 4; op++)
+    {
+        u16 tl = fmPulTL[duty & 3][op] + fmPulVolTL[vol & 15] + fmPulLevel;
+        ymDirect(FM_PUL_PART, 0x40 + (op * 4) + FM_PUL_IDX, tl > 127 ? 127 : tl);
+    }
+    Z80_releaseBus();               // part II only: the 2A latch was never touched
+}
+
+static void ymPulseFreq(u16 nesPeriod)
+{
+    u32 fnum;
+    u8 block = 0;
+
+    if (nesPeriod == fmPulPeriod) return;
+    fmPulPeriod = nesPeriod;
+
+    fnum = FM_PUL_K / ((u32)nesPeriod + 1);
+    while (fnum > 2047 && block < 7) { fnum >>= 1; block++; }
+    if (fnum > 2047) fnum = 2047;
+
+    Z80_requestBus(TRUE);
+    ymDirect(FM_PUL_PART, 0xA4 + FM_PUL_IDX, ((block & 7) << 3) | ((fnum >> 8) & 7));
+    ymDirect(FM_PUL_PART, 0xA0 + FM_PUL_IDX, fnum & 0xFF);
+    Z80_releaseBus();               // part II only
+}
+
+static void ymPulseKey(u8 on)
+{
+    if (on == fmPulKeyed) return;
+    fmPulKeyed = on;
+    Z80_requestBus(TRUE);
+    ymDirect(0, 0x28, on ? (0xF0 | FM_PUL_KEY) : FM_PUL_KEY);
     ymRelatchDac();                 // part I was touched: restore the PCM latch
     Z80_releaseBus();
 }
@@ -634,6 +763,10 @@ static void synthUpdate(void)
 {
     u8 variant, wantWave, headroom, fmTriangle, i;
     u8 stealCh2 = 0;
+    // One pulse to the YM2612, the other left on the volume DAC.  Which one is
+    // the FM one is a live toggle, because whether a lead or a counter-melody
+    // wants FM's cleaner pitch or the DAC's harder edges is a per-song answer.
+    u8 fmPulse = (synthMode == MODE_FMP);
     u16 ceiling;
     u32 kPulse, kTri;
 
@@ -659,7 +792,8 @@ static void synthUpdate(void)
     //     and only real note changes retrigger it.
     if (noiseOn && noiseVol && chanEnable[3])
     {
-        if (synthMode == MODE_FM)           stealCh2 = 1;
+        if (synthMode == MODE_FM ||
+            synthMode == MODE_FMP)          stealCh2 = 1;
         else if (synthMode == MODE_DAC_N &&
                  noiseNeedsCh2[noisePeriodIdx]) stealCh2 = 1;
     }
@@ -669,13 +803,18 @@ static void synthUpdate(void)
     // that needs duty above V3's ceiling is worth more than a DAC triangle,
     // because the hardware tone generator can still carry the triangle -- badly
     // above 109 Hz, not at all below it.
-    fmTriangle = (synthMode == MODE_FM) && triOn && chanEnable[2] && triPeriod;
+    fmTriangle = (synthMode == MODE_FM || synthMode == MODE_FMP) &&
+                 triOn && chanEnable[2] && triPeriod;
     wantWave = triOn && chanEnable[2] && !stealCh2 && !fmTriangle &&
                (synthMode != MODE_HW);
     headroom = (p1On && p1Duty != 2 && hz1 > psgdacCeiling[PSGDAC_V3] && hz1 <= psgdacCeiling[PSGDAC_V2]) ||
                (p2On && p2Duty != 2 && hz2 > psgdacCeiling[PSGDAC_V3] && hz2 <= psgdacCeiling[PSGDAC_V2]);
 
+    // V1 is the whole point of putting a pulse on FM: one voice left in the loop
+    // is 73 cycles, a 49 kHz sample rate and a 6129 Hz ceiling -- higher than any
+    // pulse in a NES song, so the surviving DAC voice never falls back to 50%.
     if (dpcmOn && dpcmAvailable && synthMode != MODE_HW) variant = PSGDAC_V2D;
+    else if (fmPulse)                                    variant = PSGDAC_V1;
     else if (wantWave && !headroom)                      variant = PSGDAC_V3;
     else                                                 variant = PSGDAC_V2;
 
@@ -691,7 +830,10 @@ static void synthUpdate(void)
     kPulse  = psgdacKPulse[variant];
     kTri    = psgdacKTriangle[variant];
     PSGDAC_setVariant(variant);
+    PSGDAC_setSolo(fmPulWhich ^ 1);     // V1's one voice is the pulse that stayed
     PSGDAC_setDpcm(variant == PSGDAC_V2D && dpcmOn);
+
+    if (!fmPulse) ymPulseKey(0);
 
     // ---- pulses -------------------------------------------------------------
     for (i = 0; i < 2; i++)
@@ -703,11 +845,28 @@ static void synthUpdate(void)
         u16 hz     = i ? hz2      : hz1;
         u8  att    = nesVolToAtten[vol];
         u8  useDac;
+        u8  useFm  = fmPulse && (i == fmPulWhich);
+
+        voiceIsFm[i] = useFm;
 
         if (!on || !vol || !period || !chanEnable[i])
         {
             PSGDAC_setPulse(i, 0, 0, 15, 0);
             attenOut(i, 15);
+            if (useFm) ymPulseKey(0);
+            voiceIsDac[i] = 0;
+            continue;
+        }
+
+        // On FM this voice has no pitch ceiling and no duty it cannot make, so
+        // there is nothing to decide -- and its PSG channel goes quiet.
+        if (useFm)
+        {
+            PSGDAC_setPulse(i, 0, 0, 15, 0);
+            attenOut(i, 15);
+            ymPulseFreq(period);
+            ymPulseTone(duty, vol);
+            ymPulseKey(1);
             voiceIsDac[i] = 0;
             continue;
         }
@@ -831,7 +990,9 @@ static void handleInput(u16 changed)
     if (changed & BUTTON_START)
     {
         synthMode = (synthMode + 1) % MODE_COUNT;
-        fmTriPeriod = 0xFFFF;               // force the FM voice to re-tune
+        fmTriPeriod = 0xFFFF;               // force the FM voices to re-tune
+        fmPulPeriod = 0xFFFF;
+        fmPulDuty = fmPulVol = 0xFF;        // ...and to re-send their levels
         // Anything could be parked in DC mode; force a full re-program.
         lastTone[0] = lastTone[1] = lastTone[2] = 0xFFFF;
         lastAtten[0] = lastAtten[1] = lastAtten[2] = lastAtten[3] = 0xFF;
@@ -859,8 +1020,30 @@ static void handleInput(u16 changed)
             cartFrame = 0;
         }
         if (changed & BUTTON_C) pcmStart();
-        if (changed & BUTTON_UP   && fmTriLevel > 0)  { fmTriLevel--; ymTriangleLevel(); }
-        if (changed & BUTTON_DOWN && fmTriLevel < 60) { fmTriLevel++; ymTriangleLevel(); }
+
+        // LEFT/RIGHT flips which pulse is the FM one, so the two can be A/B'd
+        // against each other inside the same song without stopping.
+        if (changed & (BUTTON_LEFT | BUTTON_RIGHT))
+        {
+            fmPulWhich ^= 1;
+            ymPulseKey(0);                  // the old FM voice lets go
+            fmPulPeriod = 0xFFFF;
+            fmPulDuty = fmPulVol = 0xFF;
+            lastTone[0] = lastTone[1] = 0xFFFF;     // both PSG channels re-tune
+            lastAtten[0] = lastAtten[1] = 0xFF;
+        }
+
+        // UP/DOWN trim whichever FM voice this mode is really about.
+        if (synthMode == MODE_FMP)
+        {
+            if (changed & BUTTON_UP   && fmPulLevel > 0)  { fmPulLevel--; fmPulVol = 0xFF; }
+            if (changed & BUTTON_DOWN && fmPulLevel < 60) { fmPulLevel++; fmPulVol = 0xFF; }
+        }
+        else
+        {
+            if (changed & BUTTON_UP   && fmTriLevel > 0)  { fmTriLevel--; ymTriangleLevel(); }
+            if (changed & BUTTON_DOWN && fmTriLevel < 60) { fmTriLevel++; ymTriangleLevel(); }
+        }
         if (changed & BUTTON_X) chanEnable[0] = !chanEnable[0];
         if (changed & BUTTON_Y) chanEnable[1] = !chanEnable[1];
         if (changed & BUTTON_Z) chanEnable[2] = !chanEnable[2];
@@ -873,6 +1056,7 @@ static void drawUi(void)
 {
     char t[64];
     u8 y = 10;
+    u8 i;
 
     if (dataSource == SRC_CART)
         sprintf(t, "MODE %-9s CART %4d/%d %ldfps", modeName[synthMode],
@@ -886,13 +1070,23 @@ static void drawUi(void)
             psgdacCycles[psgdacVariant], dpcmAvailable ? (dpcmOn ? "ON " : "rdy") : "n/a");
     VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y += 2;
 
-    sprintf(t, "P1 %4d Hz d%d v%2d %s", pulseHz(p1Period), p1Duty, p1Vol,
-            !p1On ? "-  " : (voiceIsDac[0] ? "DAC" : "HW "));
-    VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
+    for (i = 0; i < 2; i++)
+    {
+        u16 period = i ? p2Period : p1Period;
+        u8  duty   = i ? p2Duty   : p1Duty;
+        u8  vol    = i ? p2Vol    : p1Vol;
+        u8  on     = i ? p2On     : p1On;
+        const char *src = !on ? "-  "
+                        : voiceIsFm[i] ? "FM " : (voiceIsDac[i] ? "DAC" : "HW ");
 
-    sprintf(t, "P2 %4d Hz d%d v%2d %s", pulseHz(p2Period), p2Duty, p2Vol,
-            !p2On ? "-  " : (voiceIsDac[1] ? "DAC" : "HW "));
-    VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
+        if (voiceIsFm[i])
+            sprintf(t, "P%d %4d Hz d%d v%2d %s lvl%d", i + 1, pulseHz(period),
+                    duty, vol, src, fmPulLevel);
+        else
+            sprintf(t, "P%d %4d Hz d%d v%2d %s", i + 1, pulseHz(period),
+                    duty, vol, src);
+        VDP_clearText(2, y, 38); VDP_drawText(t, 2, y); y++;
+    }
 
     if (triSource == TRI_FM)
         sprintf(t, "TR %4d Hz     FM  lvl%d", pulseHz(triPeriod) / 2, fmTriLevel);
@@ -912,7 +1106,8 @@ static void drawUi(void)
 
     VDP_clearText(2, y, 38);
     VDP_drawText(manualNoiseControl ? "MANUAL NOISE  B/C period  Z mode"
-                                    : "START mode B src C drum MODE noise", 2, y);
+                 : (synthMode == MODE_FMP ? "START mode  L/R swap FM pulse  U/D lvl"
+                                          : "START mode B src C drum MODE noise"), 2, y);
 }
 
 // SGDK calls main with a flag saying whether this was a cold boot; declaring it
@@ -944,6 +1139,7 @@ int main(bool hardReset)
     for (i = 0; i < 4; i++) psgDirect(0x9F | (i << 5));   // silence all four channels
     if (dpcmAvailable) ymDacInit();
     ymTriangleInit();
+    ymPulseInit();
     PSGDAC_start();                 // release the bus; the loop begins here
 
     // Publish the block so Lua can find it, magic last.

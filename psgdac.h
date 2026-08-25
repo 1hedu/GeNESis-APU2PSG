@@ -22,7 +22,8 @@
 #define PSGDAC_V3       0   // pulse A + pulse B + wave C
 #define PSGDAC_V2       1   // pulse A + pulse B      (triangle on FM, or hardware)
 #define PSGDAC_V2D      2   // pulse A + pulse B + PCM
-#define PSGDAC_NVARIANT 3
+#define PSGDAC_V1       3   // one pulse; the other pulse is on the YM2612
+#define PSGDAC_NVARIANT 4
 
 #define PSGDAC_PULSE_A  0
 #define PSGDAC_PULSE_B  1
@@ -35,41 +36,47 @@
 #define Z80_YM_DATA1    0x4001          // YM2612 part I data: the PCM store target
 #define Z80_MEM(a)      ((vu8*)(0xA00000 + (a)))   // SGDK owns the name Z80_RAM
 
+// The mute byte a voice adds to its scaled span: it names the PSG channel the
+// voice writes, and in the log domain doubles as the volume offset.
+#define Z80_MUTE_A      0x9F            // latch channel 0 volume, attenuation 15
+#define Z80_MUTE_B      0xBF            // latch channel 1 volume, attenuation 15
+
 // Loop lengths, straight out of the assembler.
-static const u16 psgdacCycles[PSGDAC_NVARIANT] = {CYCLES_v3, CYCLES_v2, CYCLES_v2d};
-static const u16 psgdacRate[PSGDAC_NVARIANT]   = {15363, 24858, 20455};
+static const u16 psgdacCycles[PSGDAC_NVARIANT] = {CYCLES_v3, CYCLES_v2, CYCLES_v2d, CYCLES_v1};
+static const u16 psgdacRate[PSGDAC_NVARIANT]   = {15363, 24858, 20455, 49035};
 
 // delta = K / (nesPeriod + 1).  K = nesClock * 65536 / (divider * sampleRate).
-static const u32 psgdacKPulse[PSGDAC_NVARIANT]    = {477184, 294912, 358400};
-static const u32 psgdacKTriangle[PSGDAC_NVARIANT] = {238592, 147456, 179200};
+static const u32 psgdacKPulse[PSGDAC_NVARIANT]    = {477184, 294912, 358400, 149504};
+static const u32 psgdacKTriangle[PSGDAC_NVARIANT] = {238592, 147456, 179200, 74752};
 
 // Highest fundamental worth handing to a DAC voice: below this a 12.5% pulse
 // still gets its 8 slots per period.  Above it the hardware tone generator wins.
-static const u16 psgdacCeiling[PSGDAC_NVARIANT] = {15363 / 8, 24858 / 8, 20455 / 8};
+static const u16 psgdacCeiling[PSGDAC_NVARIANT] = {15363 / 8, 24858 / 8, 20455 / 8, 49035 / 8};
 
 // ---- patch point tables ----------------------------------------------------
 // Every patch label names an instruction; its operand starts one byte later.
 static const u16 pchDelta[2][PSGDAC_NVARIANT] = {
-    {P_v3_a_delta + 1, P_v2_a_delta + 1, P_v2d_a_delta + 1},
-    {P_v3_b_delta + 1, P_v2_b_delta + 1, P_v2d_b_delta + 1},
+    {P_v3_a_delta + 1, P_v2_a_delta + 1, P_v2d_a_delta + 1, P_v1_a_delta + 1},
+    {P_v3_b_delta + 1, P_v2_b_delta + 1, P_v2d_b_delta + 1, P_v1_a_delta + 1},
 };
 static const u16 pchDuty[2][PSGDAC_NVARIANT] = {
-    {P_v3_a_duty + 1, P_v2_a_duty + 1, P_v2d_a_duty + 1},
-    {P_v3_b_duty + 1, P_v2_b_duty + 1, P_v2d_b_duty + 1},
+    {P_v3_a_duty + 1, P_v2_a_duty + 1, P_v2d_a_duty + 1, P_v1_a_duty + 1},
+    {P_v3_b_duty + 1, P_v2_b_duty + 1, P_v2d_b_duty + 1, P_v1_a_duty + 1},
 };
 static const u16 pchSpan[2][PSGDAC_NVARIANT] = {
-    {P_v3_a_span + 1, P_v2_a_span + 1, P_v2d_a_span + 1},
-    {P_v3_b_span + 1, P_v2_b_span + 1, P_v2d_b_span + 1},
+    {P_v3_a_span + 1, P_v2_a_span + 1, P_v2d_a_span + 1, P_v1_a_span + 1},
+    {P_v3_b_span + 1, P_v2_b_span + 1, P_v2d_b_span + 1, P_v1_a_span + 1},
 };
 static const u16 pchOut[2][PSGDAC_NVARIANT] = {
-    {P_v3_a_out + 1, P_v2_a_out + 1, P_v2d_a_out + 1},
-    {P_v3_b_out + 1, P_v2_b_out + 1, P_v2d_b_out + 1},
+    {P_v3_a_out + 1, P_v2_a_out + 1, P_v2d_a_out + 1, P_v1_a_out + 1},
+    {P_v3_b_out + 1, P_v2_b_out + 1, P_v2d_b_out + 1, P_v1_a_out + 1},
 };
-static const u16 psgdacEntry[PSGDAC_NVARIANT] = {L_v3, L_v2, L_v2d};
+static const u16 psgdacEntry[PSGDAC_NVARIANT] = {L_v3, L_v2, L_v2d, L_v1};
 // Every loop body's tail jump, plus V2D's out-of-line page-wrap tail.  All are
 // re-pointed together on a variant switch, with the bus held, so it does not
 // matter which body the stopped Z80 happens to be inside.
-static const u16 pchNext[4] = {P_v3_next + 1, P_v2_next + 1, P_v2d_next + 1, P_v2d_wrapnext + 1};
+static const u16 pchNext[5] = {P_v3_next + 1, P_v2_next + 1, P_v2d_next + 1,
+                               P_v2d_wrapnext + 1, P_v1_next + 1};
 
 // ---- shadow state ----------------------------------------------------------
 typedef struct {
@@ -87,6 +94,8 @@ static u8 psgdacDpcmOn   = 0;
 static u8 psgdacDpcmSent = 0xFF;
 static u8 psgdacReady    = 0;
 static u8 psgdacDpcmPage = 0;           // reader's current ring page, from the flush
+static u8 psgdacSolo     = 0;           // in V1, which pulse owns the single voice
+static u8 psgdacSoloSent = 0xFF;
 
 static inline void z80w8(u16 addr, u8 v)   { *Z80_MEM(addr) = v; }
 static inline void z80w16(u16 addr, u16 v) { *Z80_MEM(addr) = v & 0xFF;
@@ -149,7 +158,7 @@ static void PSGDAC_init(u32 dpcmRingBase)
     z80w16(P_v3_c_out + 1, Z80_DUMMY);
     z80w16(P_v2d_d_out + 1, Z80_DUMMY);
     z80w16(P_entry + 1, psgdacEntry[PSGDAC_V3]);
-    for (i = 0; i < 4; i++) z80w16(pchNext[i], psgdacEntry[PSGDAC_V3]);
+    for (i = 0; i < 5; i++) z80w16(pchNext[i], psgdacEntry[PSGDAC_V3]);
 
     for (i = 0; i < 3; i++)
     {
@@ -183,6 +192,10 @@ static void PSGDAC_loadWave(const u8 *atten32)
 // ---- per-frame parameter setting (call, then flush) ------------------------
 
 static inline void PSGDAC_setVariant(u8 v)        { psgdacVariant = v; }
+
+// In V1 only one pulse voice exists; this names which of the two the loop runs.
+// The other pulse is being played by the YM2612 (or by the tone generator).
+static inline void PSGDAC_setSolo(u8 idx)         { psgdacSolo = idx & 1; }
 static inline void PSGDAC_setDpcm(u8 on)          { psgdacDpcmOn = on; }
 
 static inline void PSGDAC_setPulse(u8 idx, u16 delta, u8 duty, u8 atten, u8 on)
@@ -205,15 +218,26 @@ static inline void PSGDAC_setWave(u16 delta, u8 on)
 static void PSGDAC_flush(void)
 {
     u8 v = psgdacVariant;
-    u8 all = (v != psgdacSentVar);
+    u8 all = (v != psgdacSentVar) ||
+             (v == PSGDAC_V1 && psgdacSolo != psgdacSoloSent);
     u8 i;
 
     if (!psgdacReady) return;
+
+    // V1's one voice serves whichever pulse stayed on the PSG, so it is the
+    // mute byte -- the channel the voice writes -- that gets patched with it.
+    if (v == PSGDAC_V1 && all)
+    {
+        z80w8(P_v1_a_mute + 1, psgdacSolo ? Z80_MUTE_B : Z80_MUTE_A);
+        psgdacSoloSent = psgdacSolo;
+    }
 
     for (i = 0; i < 2; i++)
     {
         DacVoice *now = &psgdacVoice[i];
         DacVoice *was = &psgdacSent[i];
+
+        if (v == PSGDAC_V1 && i != psgdacSolo) continue;   // no voice to write to
         if (all || now->delta != was->delta) z80w16(pchDelta[i][v], now->delta);
         if (all || now->duty  != was->duty ) z80w8(pchDuty[i][v], now->duty);
         if (all || now->atten != was->atten) z80w8(pchSpan[i][v], psgdacSpanByte(now->atten));
@@ -239,10 +263,10 @@ static void PSGDAC_flush(void)
     }
 
     // Re-point every tail jump at the running variant.  The Z80 is stopped, so
-    // all four writes land before it takes another branch.
+    // all five writes land before it takes another branch.
     if (all)
     {
-        for (i = 0; i < 4; i++) z80w16(pchNext[i], psgdacEntry[v]);
+        for (i = 0; i < 5; i++) z80w16(pchNext[i], psgdacEntry[v]);
         psgdacSentVar = v;
     }
 
