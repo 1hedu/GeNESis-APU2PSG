@@ -19,6 +19,19 @@ static uint64_t audio_energy; static unsigned audio_samples;
 static unsigned pixfmt = 0; /* 0=0RGB1555 1=XRGB8888 2=RGB565 */
 static int16_t pad_state = 0; static unsigned press_frame = 0, press_mask = 0;
 static unsigned press2_frame = 0, press2_mask = 0;
+/* Longer button scripts than the two positional presses: set GAPU_PRESSES to a
+   comma-separated list of frame:mask, e.g. "200:8,220:8,240:8" to tap START
+   three times.  Each press is held 8 frames, which the ROM reads as one edge. */
+#define MAX_PRESSES 32
+static unsigned press_n = 0, press_at[MAX_PRESSES], press_bits[MAX_PRESSES];
+static void parse_presses(const char *spec) {
+    while (spec && *spec && press_n < MAX_PRESSES) {
+        unsigned f, m;
+        if (sscanf(spec, "%u:%u", &f, &m) != 2) break;
+        press_at[press_n] = f; press_bits[press_n] = m; press_n++;
+        spec = strchr(spec, ','); if (spec) spec++;
+    }
+}
 
 static void log_shim(int level, const char *fmt, ...) { (void)level; (void)fmt; }
 struct retro_log_iface { void (*log)(int, const char*, ...); };
@@ -80,6 +93,12 @@ static int16_t input_state_cb(unsigned port, unsigned dev, unsigned idx, unsigne
         return (press_mask>>id)&1;
     if (port==0 && press2_mask && frame_no>=press2_frame && frame_no<press2_frame+8)
         return (press2_mask>>id)&1;
+    if (port==0) {
+        unsigned i;
+        for (i = 0; i < press_n; i++)
+            if (frame_no>=press_at[i] && frame_no<press_at[i]+8)
+                return (press_bits[i]>>id)&1;
+    }
     return 0;
 }
 
@@ -92,6 +111,7 @@ int main(int argc, char **argv) {
     if (argc>7) { press_frame=atoi(argv[6]); press_mask=atoi(argv[7]); }
     if (argc>9) { meas_from=atoi(argv[8]); meas_to=atoi(argv[9]); }
     if (argc>11) { press2_frame=atoi(argv[10]); press2_mask=atoi(argv[11]); }
+    parse_presses(getenv("GAPU_PRESSES"));
     void *h = dlopen(so, RTLD_NOW);
     if (!h) { fprintf(stderr,"dlopen: %s\n",dlerror()); return 1; }
     p_init=dlsym(h,"retro_init"); p_deinit=dlsym(h,"retro_deinit"); p_run=dlsym(h,"retro_run");

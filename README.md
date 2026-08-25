@@ -45,7 +45,7 @@ Have to have both scripts running at the same time, in the same directory. Turn 
 # How it works
 
 - **Pulses** — park a PSG channel's tone period at 1 (ultrasonic carrier) and rewrite its 4-bit attenuator from a free-running Z80 loop: a volume DAC, giving true 12.5 / 25 / 75% duty. The loop's sample rate sets a pitch ceiling (3107 Hz in V2, 2557 in V2D, 1920 in V3); above it a voice falls back to the hardware tone — pitch exact, duty 50%.
-- **One pulse on FM** — an optional mode puts either pulse on YM2612 channel 4 (four carriers at MUL 1/2/3/4, levels from the duty's own harmonic series) and leaves the other on the volume DAC. LEFT/RIGHT swaps which is which. With one voice left, the Z80 loop drops to 73 cycles: a 49 kHz sample rate and a 6129 Hz ceiling, so the DAC pulse keeps its true duty at any pitch in the song.
+- **Pulses on FM** — three optional modes move pulses to the YM2612, on the same additive plan as the triangle but with the duty's own harmonic series, `|sin(pi*n*d)|/n` at MUL 1/2/3/4: one pulse (LEFT/RIGHT picks which; the other keeps the volume DAC), both pulses with the triangle back on the DAC, or both pulses plus the triangle, which leaves the PSG carrying nothing but noise. Every voice that leaves shortens the Z80 loop and raises the sample rate for the ones still in it — 73 cycles and a 6129 Hz pulse ceiling with one pulse left, 99 cycles and a 1130 Hz triangle ceiling with only the triangle left, against V3's 480 Hz.
 - **Triangle** — YM2612 channel 5, algorithm 7, four carriers at MUL 1/3/5/7. A PSG-only mode plays it on the volume DAC instead.
 - **Noise** — PSG noise clocked from tone channel 2 (rate 3) reaches 14 of the 16 NES periods; short mode reaches 15. Costs nothing with the triangle on FM.
 - **DPCM** — YM2612 channel 6 DAC, streamed from 68000 RAM through the Z80 bank window. `tools/gen_dpcm.py` extracts samples from the game's `.nes`.
@@ -60,11 +60,11 @@ bus). `technique-map.html` is a one-page summary.
 |---|---|
 | B | data source: **CART** (embedded capture, boot default) vs **SCRIPT** (live from Lua) |
 | C | play the embedded DPCM test drum |
-| START | cycle synthesis mode: **HW** → **DAC** → **DAC+NOISE** → **FM TRI** (default) → **FM TRI+P** (one pulse on FM too) |
+| START | cycle synthesis mode: **HW** → **DAC** → **DAC+NOISE** → **FM TRI** (default) → **FM TRI+P** (one pulse on FM) → **FM 2P+DAC** (both pulses on FM, triangle on the DAC) → **FM 2P+TRI** (both pulses and the triangle on FM) |
 | LEFT / RIGHT | in FM TRI+P: swap which pulse is the FM one |
 | X / Y / Z | mute pulse 1 / pulse 2 / triangle |
 | A | mute noise |
-| UP / DOWN | trim the FM triangle's level, or the FM pulse's in FM TRI+P |
+| UP / DOWN | trim the FM triangle's level, or the FM pulses' in any mode that has them |
 | MODE | manual noise audition (6-button pad): LEFT/RIGHT period, Z long/short, UP/DOWN volume |
 
 # Files
