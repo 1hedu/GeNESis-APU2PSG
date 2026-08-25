@@ -111,6 +111,33 @@ python3 tools/simz80.py
 ```
 
 
+## Reproducing the exact shipped capture: gapu_map.py
+
+`tools/gapu_map.py` gets back the *exact* capture this repo has always used
+-- byte for byte, not a fresh recording -- without distributing it. It works
+the same way an IPS or BPS ROM patch does, and for the same reason a patch
+distributed without its base ROM does not redistribute the base ROM: the
+distributed file is meaningless on its own.
+
+The capture's bytes are XORed against a keystream derived from a SHA-256 hash
+of the ROM (`SHA256(rom_sha256 || counter)`, concatenated over counter =
+0,1,2,... -- a standard hash-based counter-mode construction). The result is
+cryptographically indistinguishable from noise: every one of the 256 byte
+values appears with roughly equal frequency, no CSV structure survives. Only
+XORing it back against a keystream from the *exact same* ROM bytes recovers
+anything -- tested against the wrong ROM, unpack produces pure garbage, not a
+near-miss.
+
+```
+python3 tools/gapu_map.py pack   nes_apu_data.txt game.nes -o nes_apu_data.gapumap
+python3 tools/gapu_map.py unpack nes_apu_data.gapumap game.nes -o nes_apu_data.txt
+```
+
+This is the primary path for reproducing what this repo has always shipped.
+`gen_apu_capture.js` below is for making a *different* capture -- a new game,
+a longer playthrough, deeper into a level -- where exact reproduction isn't
+the goal and there is no original to reconstruct.
+
 ## Regenerating nes_apu_data.txt from your own ROM
 
 `nes_apu_data.txt` is not checked into this repository. The capture format
