@@ -109,3 +109,47 @@ Only needed if you edit `z80_psgdac.s80`:
 python3 tools/asmz80.py z80_psgdac.s80 -o psgdac_z80.h
 python3 tools/simz80.py
 ```
+
+
+## Regenerating nes_apu_data.txt from your own ROM
+
+`nes_apu_data.txt` is not checked into this repository. The capture format
+encodes a specific game's music -- pitches, durations, envelopes -- which is
+exactly the part of a ROM copyright protects. What ships instead is the tool
+that produces it, and a button-input schedule (a timed sequence of controller
+presses, which holds no game content of its own) to drive a specific stretch
+of gameplay. Given your own legally-obtained ROM, running the tool never
+distributes anything of the game's.
+
+```
+cd tools
+npm install
+node gen_apu_capture.js path/to/game.nes schedules/ducktales.txt 8697 -o ../nes_apu_data.txt
+```
+
+Uses [jsnes](https://github.com/jsnes/jsnes), a from-scratch NES core with
+every APU register write visible as a plain JS call. That mattered here: an
+FCEUX-under-Xvfb attempt hung/crashed repeatedly in this environment (Qt
+needs a real GL context), and Nestopia's libretro core -- reliable for the
+DPCM extraction work, see above -- only exposes 2 KB of system RAM through the
+standard `retro_get_memory_data` API, not the write-only APU I/O registers a
+capture needs. jsnes sidesteps both: no GUI to crash, and
+`nes.papu.writeReg()` is one hookable choke point for every register write.
+
+The output is field-for-field identical to `GeNESis-APU2PSG-Recorder.lua`'s
+v2 format (`#GAPU2 v2` header, 26 comma-separated fields a line, `.lower.py`
+tools none the wiser) -- same post-envelope volumes (`channel.masterVolume`,
+already the correct decayed level, no re-derivation needed), same
+hardware-accurate on/off bit (`channel.getLengthStatus()` for all five
+channels including DMC), same $4015-write-instant DMC trigger latch as the
+Lua recorder's `memory.registerwrite` hook. `tools/gen_apudata.py` and
+`tools/gen_dpcm.py` consume it unmodified.
+
+**Status:** the extraction mechanism is verified -- well-formed output every
+frame, real musical variation, and DPCM triggers cross-validated against the
+independent static ROM scan (both agree DuckTales has none). The *included*
+`schedules/ducktales.txt` is only a first pass, though: over a full 8697-frame
+run it only reaches 3 distinct pulse periods, which reads as stuck on a
+title/menu loop rather than into real level content. Refining the schedule
+to reach further into the game is the next step, not a tool problem -- swap
+in a better-timed schedule (or your own) and rerun.
