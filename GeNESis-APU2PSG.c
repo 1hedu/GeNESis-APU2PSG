@@ -71,15 +71,37 @@ static inline void psgAtten(u8 ch, u8 att) { psgWrite(0x90 | (ch << 5) | (att & 
 // ---- direct access, valid only while the bus is held -----------------------
 static inline void psgDirect(u8 b) { *PSG_PORT_68K = b; }
 
+// Matches SGDK's own YM2612_writeReg exactly, for a documented real-hardware
+// reason: the status/busy flag is only valid read via PORT 0 on the YM3438
+// (Model 2 and later consoles) -- reading it via the part-II port, which the
+// first version of this function did, returns garbage on that chip. The NOP
+// delays are not optional either: the busy flag does not update immediately
+// after a write ("needed on MD2" per SGDK's own comment), so re-polling it
+// right after the address write can pass through before the chip has actually
+// latched the register, corrupting the data byte that follows -- which for
+// the triangle voice is its frequency or level. Silent in every software
+// emulator tested (none model this), and the reported symptom on real
+// hardware -- claims FM, sounds like a wrong-pitch square -- is exactly what
+// corrupted frequency/TL registers produce.
 static void ymDirect(u8 part, u8 reg, u8 val)
 {
-    vu8* addr = (vu8*)(0xA04000 + (part * 2));
-    vu8* data = (vu8*)(0xA04001 + (part * 2));
-    while (*addr & 0x80) ;
-    *addr = reg;
-    while (*addr & 0x80) ;
-    *data = val;
+    vs8* pb = (vs8*)0xA04000;
+    u16 port = (part << 1) & 2;
+
+    while (*pb < 0) ;                   // busy, port 0 only -- valid on every chip revision
+    pb[port + 0] = reg;
+    __asm__ volatile ("nop");           // >=12 cycles between address and data write
+    pb[port + 1] = val;
+    __asm__ volatile ("nop");           // busy flag lags the write; do not trust an immediate re-poll
+    __asm__ volatile ("nop");
+    __asm__ volatile ("nop");
+    __asm__ volatile ("nop");
+    __asm__ volatile ("nop");
 }
+
+// Re-latch part I's address port on 2Ah, busy-waited the same as any other
+// register write -- a bare store here would race whatever wrote last.
+static inline void ymRelatchDirect(void) { ymDirect(0, 0x2A, 0x80); }
 
 // -----------------------------------------------------------------------------
 // NES -> PSG conversion tables.  Regenerate with tools/gen_tables.py.
@@ -311,7 +333,7 @@ static void noiseOut(u8 white, u8 rate)
 // back on the DAC register so the Z80's PCM store keeps landing where it must.
 static void ymRelatchDac(void)
 {
-    if (dpcmAvailable) *(vu8*)0xA04000 = 0x2A;
+    if (dpcmAvailable) ymRelatchDirect();
 }
 
 static void ymDacInit(void)
@@ -319,8 +341,7 @@ static void ymDacInit(void)
     ymDirect(0, 0x2B, 0x80);    // channel 6 becomes the DAC
     ymDirect(1, 0xB6, 0xC0);    // both speakers
     ymDirect(0, 0x28, 0x06);    // key off, the DAC does not need an envelope
-    ymDirect(0, 0x2A, 0x80);    // sit at mid scale
-    *(vu8*)0xA04000 = 0x2A;     // and leave part I latched on the DAC register
+    ymDirect(0, 0x2A, 0x80);    // sit at mid scale, and leave part I latched here
 }
 
 // -----------------------------------------------------------------------------
@@ -396,7 +417,7 @@ static void ymTriangleInit(void)
     ymDirect(FM_TRI_PART, 0xB0 + FM_TRI_IDX, 0x07);  // no feedback, algorithm 7
     ymDirect(FM_TRI_PART, 0xB4 + FM_TRI_IDX, 0xC0);  // both speakers
     ymDirect(0, 0x28, FM_TRI_KEY);                   // key off
-    *(vu8*)0xA04000 = 0x2A;                          // restore the DAC latch
+    if (dpcmAvailable) ymRelatchDirect();            // restore the DAC latch
     fmTriPeriod = 0xFFFF;
     fmTriKeyed = 0;
 }
