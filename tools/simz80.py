@@ -267,13 +267,29 @@ def main():
     print("%s V3 loop is %d cycles enabled, %d disabled (want 233 both)"
           % ("OK " if ok else "BAD", on[0][1], off[0][1]))
 
-    for name, want in (("L_v2", 144), ("L_v2d", 175)):
+    for name, want in (("L_v2", 144), ("L_v2d", 175), ("L_v1", 73)):
         r = run(blob, sym, name, {}, samples=4)
         got = r[1][1]
         ok = got == want
         fail += not ok
         print("%s %s loop is %d cycles (want %d) -> %.0f Hz"
               % ("OK " if ok else "BAD", name, got, want, 3579545.0 / got))
+
+    # ---- V1's single voice can be either pulse -------------------------
+    # In V1 the mute byte is patched as well as the operands: it is what names
+    # the PSG channel the one surviving voice writes to, so both pulses can take
+    # the same slot depending on which one went to FM.
+    for mute, chan, want in ((0x9F, 0, 0x93), (0xBF, 1, 0xB3)):
+        res = run(blob, sym, "L_v1", {
+            "P_v1_a_duty": 255, "P_v1_a_span": att_to_span(3),
+            "P_v1_a_mute": mute, "P_v1_a_out": (1, 0x7F11),
+            "P_v1_a_delta": (1, 0),
+        }, samples=1)
+        got = res[0][0][0][1]
+        ok = got == want
+        fail += not ok
+        print("%s V1 voice with mute 0x%02X -> channel %d, 0x%02X (want 0x%02X)"
+              % ("OK " if ok else "BAD", mute, chan, got, want))
 
     # ---- PCM ring wraps inside 0x9000..0x9FFF --------------------------
     cpu = Z80(blob)

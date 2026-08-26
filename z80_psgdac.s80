@@ -28,7 +28,7 @@
 ; one byte later.  psgdac.h owns those offsets.
 ;
 ; SAMPLE RATE IS LOOP LENGTH, so each voice added lowers every voice's pitch
-; ceiling.  Three loop bodies; the 68000 re-points the tail jumps to switch.
+; ceiling.  Four loop bodies; the 68000 re-points the tail jumps to switch.
 ; ==============================================================================
 
 PSG         equ 7F11h           ; PSG port, seen from the Z80 bus
@@ -189,3 +189,45 @@ P_dpcm_page:    or 90h              ; ...based here
                 ld b,a
                 ld (dpcmPage),a
 P_v2d_wrapnext: jp L_v2d
+
+; ==============================================================================
+; V1 : one pulse voice.  The other pulse is on the YM2612, so only one voice is
+; left to run at sample rate -- and a 73-cycle loop is a 49 kHz sample rate,
+; which puts the 12.5% ceiling above 6 kHz.  No NES pulse reaches that, so the
+; surviving DAC voice keeps its true duty at every pitch in the song.
+;
+; Either pulse can be the one that stays here, so the mute byte is patched too:
+; it is what names the PSG channel this voice writes (9Fh = channel 0,
+; 0BFh = channel 1), and in the log domain it doubles as the volume offset.
+; ==============================================================================
+;@cycles L_v1 L_v1end
+L_v1:
+P_v1_a_delta:   ld de,0000h
+                add hl,de
+                ld a,h
+P_v1_a_duty:    cp 80h
+                sbc a,a
+P_v1_a_span:    and 00h
+P_v1_a_mute:    add a,MUTE_A        ; patched: which PSG channel this voice is
+P_v1_a_out:     ld (dummy),a
+P_v1_next:      jp L_v1
+L_v1end:
+
+; ==============================================================================
+; VW : the wave voice alone.  Both pulses are on the YM2612, so the triangle is
+; the only thing left running at sample rate -- and with the pulses gone it gets
+; the whole loop: 36 kHz instead of V3's 15 kHz, which lifts the 32-step
+; staircase's ceiling from 480 Hz to 1130 Hz.
+; ==============================================================================
+;@cycles L_vw L_vwend
+L_vw:
+P_vw_c_delta:   ld bc,0000h
+                add iy,bc
+                ld (phC),iy
+                ld a,(phCH)
+P_vw_c_page:    ld d,WAVEPAGE
+                ld e,a
+                ld a,(de)
+P_vw_c_out:     ld (dummy),a
+P_vw_next:      jp L_vw
+L_vwend:

@@ -19,6 +19,19 @@ static uint64_t audio_energy; static unsigned audio_samples;
 static unsigned pixfmt = 0; /* 0=0RGB1555 1=XRGB8888 2=RGB565 */
 static int16_t pad_state = 0; static unsigned press_frame = 0, press_mask = 0;
 static unsigned press2_frame = 0, press2_mask = 0;
+/* Longer button scripts than the two positional presses: set GAPU_PRESSES to a
+   comma-separated list of frame:mask, e.g. "200:8,220:8,240:8" to tap START
+   three times.  Each press is held 8 frames, which the ROM reads as one edge. */
+#define MAX_PRESSES 32
+static unsigned press_n = 0, press_at[MAX_PRESSES], press_bits[MAX_PRESSES];
+static void parse_presses(const char *spec) {
+    while (spec && *spec && press_n < MAX_PRESSES) {
+        unsigned f, m;
+        if (sscanf(spec, "%u:%u", &f, &m) != 2) break;
+        press_at[press_n] = f; press_bits[press_n] = m; press_n++;
+        spec = strchr(spec, ','); if (spec) spec++;
+    }
+}
 
 static void log_shim(int level, const char *fmt, ...) { (void)level; (void)fmt; }
 struct retro_log_iface { void (*log)(int, const char*, ...); };
@@ -59,9 +72,33 @@ static void video_cb(const void *data, unsigned w, unsigned h, size_t pitch) {
     if (frame_no == dump_at2) { char n[64]; sprintf(n,"/tmp/frame_%u.ppm",frame_no); save_ppm(n,data,w,h,pitch); }
 }
 static unsigned meas_from, meas_to;
+/* Optional WAV of the measured window, for looking at what the chip actually
+   emitted rather than inferring it from level alone.  Set GAPU_WAV=path. */
+static FILE *wav_f = NULL; static unsigned wav_frames = 0;
+static void wav_open(const char *path) {
+    unsigned char hdr[44] = {0};
+    if (!path) return;
+    wav_f = fopen(path, "wb");
+    if (wav_f) fwrite(hdr, 1, 44, wav_f);        /* patched on close */
+}
+static void wav_close(unsigned rate) {
+    unsigned data = wav_frames * 4, riff = data + 36;
+    unsigned char h[44] = {'R','I','F','F',0,0,0,0,'W','A','V','E','f','m','t',' ',
+                           16,0,0,0, 1,0, 2,0, 0,0,0,0, 0,0,0,0, 4,0, 16,0,
+                           'd','a','t','a', 0,0,0,0};
+    if (!wav_f) return;
+    h[4]=riff&255; h[5]=(riff>>8)&255; h[6]=(riff>>16)&255; h[7]=(riff>>24)&255;
+    h[24]=rate&255; h[25]=(rate>>8)&255; h[26]=(rate>>16)&255; h[27]=(rate>>24)&255;
+    { unsigned br = rate*4; h[28]=br&255; h[29]=(br>>8)&255; h[30]=(br>>16)&255; h[31]=(br>>24)&255; }
+    h[40]=data&255; h[41]=(data>>8)&255; h[42]=(data>>16)&255; h[43]=(data>>24)&255;
+    fseek(wav_f, 0, SEEK_SET); fwrite(h, 1, 44, wav_f); fclose(wav_f); wav_f = NULL;
+}
 static double meas_sq; static unsigned long meas_n;
 static void note(int16_t l, int16_t r) {
     audio_energy += (l<0?-l:l)+(r<0?-r:r); audio_samples++;
+    if (wav_f && frame_no>=meas_from && frame_no<meas_to) {
+        int16_t s2[2] = {l, r}; fwrite(s2, 2, 2, wav_f); wav_frames++;
+    }
     if (frame_no>=meas_from && frame_no<meas_to) {
         double m = (double)l+(double)r; meas_sq += m*m; meas_n++;
     }
@@ -80,6 +117,12 @@ static int16_t input_state_cb(unsigned port, unsigned dev, unsigned idx, unsigne
         return (press_mask>>id)&1;
     if (port==0 && press2_mask && frame_no>=press2_frame && frame_no<press2_frame+8)
         return (press2_mask>>id)&1;
+    if (port==0) {
+        unsigned i;
+        for (i = 0; i < press_n; i++)
+            if (frame_no>=press_at[i] && frame_no<press_at[i]+8)
+                return (press_bits[i]>>id)&1;
+    }
     return 0;
 }
 
@@ -92,6 +135,8 @@ int main(int argc, char **argv) {
     if (argc>7) { press_frame=atoi(argv[6]); press_mask=atoi(argv[7]); }
     if (argc>9) { meas_from=atoi(argv[8]); meas_to=atoi(argv[9]); }
     if (argc>11) { press2_frame=atoi(argv[10]); press2_mask=atoi(argv[11]); }
+    parse_presses(getenv("GAPU_PRESSES"));
+    wav_open(getenv("GAPU_WAV"));
     void *h = dlopen(so, RTLD_NOW);
     if (!h) { fprintf(stderr,"dlopen: %s\n",dlerror()); return 1; }
     p_init=dlsym(h,"retro_init"); p_deinit=dlsym(h,"retro_deinit"); p_run=dlsym(h,"retro_run");
@@ -121,6 +166,7 @@ int main(int argc, char **argv) {
         for (i=0;i<60;i++) r = 0.5*(r+rms/r);
         printf("MEAS frames %u..%u  RMS %.2f\n", meas_from, meas_to, r);
     }
+    wav_close(44100);
     p_deinit();
     return 0;
 }
